@@ -518,7 +518,6 @@ def create_config(backtest_config: dict) -> dict:
     config = {k: backtest_config[k] for k in backtest_config
               if k not in {'session_name', 'user', 'symbol', 'start_date', 'end_date', 'ranges'}}
     for k in backtest_config['ranges']:
-        config[k] = tune.quniform(*[backtest_config['ranges'][k][i] for i in range(3)])
         config[k] = tune.choice(np.arange(backtest_config['ranges'][k][0],
                                           backtest_config['ranges'][k][1] + backtest_config['ranges'][k][2],
                                           backtest_config['ranges'][k][2]))
