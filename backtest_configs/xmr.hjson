@@ -21,6 +21,7 @@
   # set end_date=-1 to use now as end date
   end_date: -1
 
+  # If start, stop, and step are set to same value, it's treated as a fixed variable.
   ranges:
   {
     qty_pct: [0.0, 0.5, 0.0001]
