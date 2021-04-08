@@ -12,6 +12,8 @@ from ray.tune.suggest.nevergrad import NevergradSearch
 from downloader import Downloader, prep_backtest_config
 from passivbot import *
 
+os.environ['TUNE_GLOBAL_CHECKPOINT_S'] = '120'
+
 
 def dump_plots(result: dict, fdf: pd.DataFrame, df: pd.DataFrame):
     plt.rcParams['figure.figsize'] = [29, 18]
