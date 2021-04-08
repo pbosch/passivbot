@@ -404,9 +404,8 @@ def backtest(config: dict, ticks: np.ndarray, return_fills=False, do_print=False
                     else:
                         result = prepare_result(all_fills, ticks, config['do_long'],
                                                 config['do_shrt'])
-                        tune.report(objective=objective_function(result, config[
-                            'desired_minimum_liquidation_distance'], config['desired_max_hours_stuck'],
-                                                                 config['desired_minimum_daily_fills']))
+                        tune.report(objective=objective_function(result, config['desired_minimum_liquidation_distance'],
+                                                                 config['desired_maximum_daily_entries']))
             if do_print:
                 line = f"\r{all_fills[-1]['progress']:.3f} "
                 line += f"adg {all_fills[-1]['average_daily_gain']:.4f} "
@@ -417,8 +416,7 @@ def backtest(config: dict, ticks: np.ndarray, return_fills=False, do_print=False
     else:
         result = prepare_result(all_fills, ticks, config['do_long'], config['do_shrt'])
         tune.report(objective=objective_function(result, config['desired_minimum_liquidation_distance'],
-                                                 config['desired_max_hours_stuck'],
-                                                 config['desired_minimum_daily_fills']))
+                                                 config['desired_max_hours_stuck']))
 
 
 def candidate_to_live_settings(exchange: str, candidate: dict) -> dict:
@@ -506,15 +504,14 @@ def prepare_result(fills: list, ticks: np.ndarray, do_long: bool, do_shrt: bool)
     return result
 
 
-def objective_function(result: dict, liq_cap: float, hours_stuck_cap: int, n_daily_fills_cap: float) -> float:
+def objective_function(result: dict, liq_cap: float, n_daily_entries_cap: int) -> float:
     try:
-        return ((result['average_daily_gain'] - 1) *
-                min(1.0, (result['n_fills'] / result['n_days']) / n_daily_fills_cap) *
-                min(1.0, result['closest_liq'] / liq_cap) /
-                max(1.0, result['max_n_hours_stuck'] / hours_stuck_cap))
+        return (result['average_daily_gain'] *
+                min(1.0, (result['n_entries'] / result['n_days']) / n_daily_entries_cap) *
+                min(1.0, result['closest_liq'] / liq_cap))
     except Exception as e:
-        # print('error with score func', e, result)
-        return -1.0
+        print('error with score func', e, result)
+        return 0.0
 
 
 def create_config(backtest_config: dict) -> dict:
@@ -545,8 +542,7 @@ def k_fold(config, ticks=None):
             result = prepare_result(fills, ticks[i * int(int(len(ticks) / folds) / folds):], config['do_long'],
                                     config['do_shrt'])
             objectives.append(objective_function(result, config['desired_minimum_liquidation_distance'],
-                                                 config['desired_max_hours_stuck'],
-                                                 config['desired_minimum_daily_fills']))
+                                                 config['desired_maximum_daily_entries']))
 
         else:
             fills, _ = backtest(config, ticks=ticks[i * int(int(len(ticks) / folds) / folds):(i + 1) * int(
@@ -554,8 +550,7 @@ def k_fold(config, ticks=None):
             result = prepare_result(fills, ticks[i * int(int(len(ticks) / folds) / folds):(i + 1) * int(
                 int(len(ticks) / folds) / folds)], config['do_long'], config['do_shrt'])
             objectives.append(objective_function(result, config['desired_minimum_liquidation_distance'],
-                                                 config['desired_max_hours_stuck'],
-                                                 config['desired_minimum_daily_fills']))
+                                                 config['desired_maximum_daily_entries']))
 
     tune.report(objective=np.average(objectives))
 
