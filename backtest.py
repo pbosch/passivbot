@@ -512,7 +512,7 @@ def objective_function(result: dict, liq_cap: float, n_daily_entries_cap: int) -
                 min(1.0, (result['n_entries'] / result['n_days']) / n_daily_entries_cap) *
                 min(1.0, result['closest_liq'] / liq_cap))
     except Exception as e:
-        print('error with score func', e, result)
+        print('error with objective function', e, result)
         return 0.0
 
 
