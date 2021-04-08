@@ -10,9 +10,12 @@
   do_shrt: true
   leverage: 12
   n_close_orders: 16
-
-  iters: 10
-  num_cpus: 2
+  
+  # pso options
+  iters: 100
+  num_cpus: 4
+  options: {"c1": 1.4962, "c2": 1.4962, "w": 0.7298}
+  n_particles: 24
 
   minimum_liquidation_distance: 0.3
   maximum_daily_entries: 10
