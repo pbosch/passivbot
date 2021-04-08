@@ -15,7 +15,7 @@
   num_cpus: 2
 
   minimum_liquidation_distance: 0.3
-  _maximum_daily_entries: 10
+  maximum_daily_entries: 10
   
   start_date: 2021-03-01T21:30
   # set end_date=-1 to use now as end date
