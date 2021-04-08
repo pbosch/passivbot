@@ -584,6 +584,16 @@ def backtest_tune(ticks: np.ndarray, backtest_config: dict, current_best: dict =
         num_cpus = backtest_config['num_cpus']
     else:
         print('Parameter num_cpus should be defined in the configuration. Defaulting to 2.')
+    n_particles = 10
+    if 'n_particles' in backtest_config:
+        n_particles = backtest_config['n_particles']
+    phi1 = 1.4962
+    phi2 = 1.4962
+    omega = 0.7298
+    if 'options' in backtest_config:
+        phi1 = backtest_config['options']['c1']
+        phi2 = backtest_config['options']['c2']
+        omega = backtest_config['options']['w']
     current_best_params = []
     if current_best:
         current_best = clean_start_config(current_best, config)
@@ -591,7 +601,7 @@ def backtest_tune(ticks: np.ndarray, backtest_config: dict, current_best: dict =
     initial_points = max(1, min(int(iters / 10), 20))
 
     ray.init(num_cpus=num_cpus)
-    pso = ng.optimizers.ConfiguredPSO()
+    pso = ng.optimizers.ConfiguredPSO(transform='identity', popsize=n_particles, omega=omega, phip=phi1, phig=phi2)
     algo = NevergradSearch(optimizer=pso, points_to_evaluate=current_best_params)
     # algo = HyperOptSearch(points_to_evaluate=current_best_params, n_initial_points=initial_points)
     algo = ConcurrencyLimiter(algo, max_concurrent=num_cpus)
