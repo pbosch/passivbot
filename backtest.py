@@ -416,7 +416,7 @@ def backtest(config: dict, ticks: np.ndarray, return_fills=False, do_print=False
     else:
         result = prepare_result(all_fills, ticks, config['do_long'], config['do_shrt'])
         tune.report(objective=objective_function(result, config['desired_minimum_liquidation_distance'],
-                                                 config['desired_max_hours_stuck']))
+                                                 config['desired_maximum_daily_entries']))
 
 
 def candidate_to_live_settings(exchange: str, candidate: dict) -> dict:
