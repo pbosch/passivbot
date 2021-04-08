@@ -533,28 +533,6 @@ def clean_start_config(start_config: dict, backtest_config: dict) -> dict:
     return clean_start
 
 
-def k_fold(config, ticks=None):
-    folds = int(config['folds'])
-    objectives = []
-    for i in range(folds):
-        if i == folds - 1:
-            fills, _ = backtest(config, ticks=ticks[i * int(int(len(ticks) / folds) / folds):], return_fills=True)
-            result = prepare_result(fills, ticks[i * int(int(len(ticks) / folds) / folds):], config['do_long'],
-                                    config['do_shrt'])
-            objectives.append(objective_function(result, config['desired_minimum_liquidation_distance'],
-                                                 config['desired_maximum_daily_entries']))
-
-        else:
-            fills, _ = backtest(config, ticks=ticks[i * int(int(len(ticks) / folds) / folds):(i + 1) * int(
-                int(len(ticks) / folds) / folds)], return_fills=True)
-            result = prepare_result(fills, ticks[i * int(int(len(ticks) / folds) / folds):(i + 1) * int(
-                int(len(ticks) / folds) / folds)], config['do_long'], config['do_shrt'])
-            objectives.append(objective_function(result, config['desired_minimum_liquidation_distance'],
-                                                 config['desired_maximum_daily_entries']))
-
-    tune.report(objective=np.average(objectives))
-
-
 def clean_result_config(config: dict) -> dict:
     for k, v in config.items():
         if type(v) == np.float64:
@@ -602,7 +580,7 @@ def backtest_tune(ticks: np.ndarray, backtest_config: dict, current_best: dict =
     algo = ConcurrencyLimiter(algo, max_concurrent=num_cpus)
     scheduler = AsyncHyperBandScheduler()
 
-    analysis = tune.run(tune.with_parameters(k_fold, ticks=ticks), metric='objective', mode='max', name='search',
+    analysis = tune.run(tune.with_parameters(backtest, ticks=ticks), metric='objective', mode='max', name='search',
                         search_alg=algo, scheduler=scheduler, num_samples=iters, config=config, verbose=1,
                         reuse_actors=True, local_dir=session_dirpath)
 

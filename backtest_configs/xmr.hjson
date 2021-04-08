@@ -13,7 +13,6 @@
 
   iters: 10
   num_cpus: 2
-  folds: 4
 
   desired_minimum_liquidation_distance: 0.3
   desired_maximum_daily_entries: 10
