@@ -560,6 +560,15 @@ def k_fold(config, ticks=None):
     tune.report(objective=np.average(objectives))
 
 
+def clean_result_config(config: dict) -> dict:
+    for k, v in config.items():
+        if type(v) == np.float64:
+            config[k] = float(v)
+        if type(v) == np.int64 or type(v) == np.int32 or type(v) == np.int16 or type(v) == np.int8:
+            config[k] = int(v)
+    return config
+
+
 def backtest_tune(ticks: np.ndarray, backtest_config: dict, current_best: dict = None):
     config = create_config(backtest_config)
     n_days = round_((ticks[-1][2] - ticks[0][2]) / (1000 * 60 * 60 * 24), 0.1)
@@ -595,7 +604,7 @@ def backtest_tune(ticks: np.ndarray, backtest_config: dict, current_best: dict =
     ray.shutdown()
 
     print('Best candidate found were: ', analysis.best_config)
-    plot_wrap(backtest_config, ticks, analysis.best_config)
+    plot_wrap(backtest_config, ticks, clean_result_config(analysis.best_config))
     return analysis
 
 
