@@ -596,7 +596,13 @@ def backtest_tune(ticks: np.ndarray, backtest_config: dict, current_best: dict =
                         reuse_actors=True, local_dir=session_dirpath)
 
     ray.shutdown()
-
+    df = analysis.results_df
+    df.reset_index(inplace=True)
+    df.drop(columns=['trial_id', 'time_this_iter_s', 'done', 'timesteps_total', 'episodes_total', 'training_iteration',
+                     'experiment_id', 'date', 'timestamp', 'time_total_s', 'pid', 'hostname', 'node_ip',
+                     'time_since_restore', 'timesteps_since_restore', 'iterations_since_restore', 'experiment_tag'],
+            inplace=True)
+    df.to_csv(os.path.join(backtest_config['session_dirpath'], 'results.csv'), index=False)
     print('Best candidate found were: ', analysis.best_config)
     plot_wrap(backtest_config, ticks, clean_result_config(analysis.best_config))
     return analysis
