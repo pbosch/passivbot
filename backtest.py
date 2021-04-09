@@ -1,3 +1,4 @@
+import gc
 from hashlib import sha256
 
 import matplotlib.pyplot as plt
@@ -404,10 +405,13 @@ def backtest(config: dict, ticks: np.ndarray, return_fills=False, do_print=False
                     if return_fills:
                         return all_fills, False
                     else:
-                        result = prepare_result(all_fills, ticks, config['do_long'],
-                                                config['do_shrt'])
-                        tune.report(objective=objective_function(result, config['minimum_liquidation_distance'],
-                                                                 config['maximum_daily_entries']))
+                        result = prepare_result(all_fills, ticks, config['do_long'], config['do_shrt'])
+                        objective = objective_function(result, config['minimum_liquidation_distance'],
+                                                       config['maximum_daily_entries'])
+                        tune.report(objective=objective)
+                        del all_fills
+                        gc.collect()
+                        return objective
             if do_print:
                 line = f"\r{all_fills[-1]['progress']:.3f} "
                 line += f"adg {all_fills[-1]['average_daily_gain']:.4f} "
@@ -417,8 +421,11 @@ def backtest(config: dict, ticks: np.ndarray, return_fills=False, do_print=False
         return all_fills, True
     else:
         result = prepare_result(all_fills, ticks, config['do_long'], config['do_shrt'])
-        tune.report(objective=objective_function(result, config['minimum_liquidation_distance'],
-                                                 config['maximum_daily_entries']))
+        objective = objective_function(result, config['minimum_liquidation_distance'], config['maximum_daily_entries'])
+        tune.report(objective=objective)
+        del all_fills
+        gc.collect()
+        return objective
 
 
 def candidate_to_live_settings(exchange: str, candidate: dict) -> dict:
