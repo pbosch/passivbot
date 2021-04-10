@@ -1,5 +1,7 @@
 import gc
+import glob
 from hashlib import sha256
+from typing import Union
 
 import matplotlib.pyplot as plt
 import nevergrad as ng
@@ -536,11 +538,27 @@ def create_config(backtest_config: dict) -> dict:
     return config
 
 
+def find_closest(value: float, distribution: np.ndarray) -> float:
+    closest = 0
+    error = 100
+    for i in distribution:
+        if i - value < error:
+            closest = i
+    return closest
+
+
 def clean_start_config(start_config: dict, backtest_config: dict) -> dict:
     clean_start = {}
     for k, v in start_config.items():
         if k in backtest_config:
-            clean_start[k] = v
+            try:
+                if v in backtest_config[k]:
+                    clean_start[k] = v
+                else:
+                    closest = find_closest(v, backtest_config[k])
+                    clean_start[k] = closest
+            except:
+                pass
     return clean_start
 
 
@@ -553,7 +571,7 @@ def clean_result_config(config: dict) -> dict:
     return config
 
 
-def backtest_tune(ticks: np.ndarray, backtest_config: dict, current_best: dict = None):
+def backtest_tune(ticks: np.ndarray, backtest_config: dict, current_best: Union[dict, list] = None):
     config = create_config(backtest_config)
     n_days = round_((ticks[-1][2] - ticks[0][2]) / (1000 * 60 * 60 * 24), 0.1)
     session_dirpath = make_get_filepath(os.path.join('reports', backtest_config['exchange'], backtest_config['symbol'],
@@ -580,14 +598,17 @@ def backtest_tune(ticks: np.ndarray, backtest_config: dict, current_best: dict =
         omega = backtest_config['options']['w']
     current_best_params = []
     if current_best:
-        current_best = clean_start_config(current_best, config)
-        current_best_params.append(current_best)
-    initial_points = max(1, min(int(iters / 10), 20))
+        if type(current_best) == list:
+            for c in current_best:
+                c = clean_start_config(c, config)
+                current_best_params.append(c)
+        else:
+            current_best = clean_start_config(current_best, config)
+            current_best_params.append(current_best)
 
     ray.init(num_cpus=num_cpus)
     pso = ng.optimizers.ConfiguredPSO(transform='identity', popsize=n_particles, omega=omega, phip=phi1, phig=phi2)
     algo = NevergradSearch(optimizer=pso, points_to_evaluate=current_best_params)
-    # algo = HyperOptSearch(points_to_evaluate=current_best_params, n_initial_points=initial_points)
     algo = ConcurrencyLimiter(algo, max_concurrent=num_cpus)
     scheduler = AsyncHyperBandScheduler()
 
@@ -647,8 +668,13 @@ async def main(args: list):
     start_candidate = None
     if (s := '--start') in args:
         try:
-            start_candidate = json.load(open(args[args.index(s) + 1]))
-            print('Starting with specified configuration.')
+            if os.path.isdir(args[args.index(s) + 1]):
+                start_candidate = [json.load(open(f)) for f in
+                                   glob.glob(os.path.join(args[args.index(s) + 1], '*.json'))]
+                print('Starting with all configurations in directory.')
+            else:
+                start_candidate = json.load(open(args[args.index(s) + 1]))
+                print('Starting with specified configuration.')
         except:
             print('Could not find specified configuration.')
     if start_candidate:
