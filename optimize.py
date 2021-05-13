@@ -18,16 +18,21 @@ from ray.tune.suggest.nevergrad import NevergradSearch
 
 from backtest import backtest, plot_wrap, prepare_result, prep_backtest_config
 from downloader import Downloader
-from passivbot import round_, make_get_filepath, ts_to_date
+from jitted import round_
+from passivbot import make_get_filepath, ts_to_date
 from reporter import LogReporter
 
 os.environ['TUNE_GLOBAL_CHECKPOINT_S'] = '120'
 
 
-def objective_function(result: dict, liq_cap: float, n_daily_entries_cap: int) -> float:
+def objective_function(result: dict,
+                       liq_cap: float,
+                       max_hrs_no_fills_cap: float,
+                       max_hrs_no_fills_same_side_cap: float) -> float:
     try:
         return (result['average_daily_gain'] *
-                min(1.0, (result['n_entries'] / result['n_days']) / n_daily_entries_cap) *
+                min(1.0, max_hrs_no_fills_cap / result['max_hrs_no_fills']) *
+                min(1.0, max_hrs_no_fills_same_side_cap / result['max_hrs_no_fills_same_side']) *
                 min(1.0, result['closest_liq'] / liq_cap))
     except Exception as e:
         print('error with objective function', e, result)
@@ -65,11 +70,32 @@ def clean_result_config(config: dict) -> dict:
     return config
 
 
+def iter_slices(iterable, size: float, n_tests: int):
+    for ix in np.linspace(0.0, 1 - size, n_tests):
+        yield iterable[int(round(len(iterable) * ix)):int(round(len(iterable) * (ix + size)))]
+
+
 def wrap_backtest(config, ticks):
-    fills, did_finish = backtest(config, ticks)
-    result = prepare_result(fills, ticks, config['do_long'], config['do_shrt'])
-    objective = objective_function(result, config['minimum_liquidation_distance'], config['minimum_daily_entries'])
-    tune.report(objective=objective, daily_gain=result['average_daily_gain'], closest_liquidation=result['closest_liq'])
+    results = []
+    for ticks_slice in iter_slices(ticks, 0.4, 4):
+        fills, _, did_finish = backtest(config, ticks_slice)
+        result_ = prepare_result(fills, ticks_slice, config['do_long'], config['do_shrt'])
+        results.append(result_)
+    result = {}
+    for k in results[0]:
+        try:
+            result[k] = np.mean([r[k] for r in results])
+        except:
+            result[k] = results[0][k]
+
+    # fills, _, did_finish = backtest(config, ticks)
+    # result = prepare_result(fills, ticks, config['do_long'], config['do_shrt'])
+    objective = objective_function(result,
+                                   config['minimum_liquidation_distance'],
+                                   config['max_hrs_no_fills'],
+                                   config['max_hrs_no_fills_same_side'])
+    tune.report(objective=objective, daily_gain=result['average_daily_gain'], closest_liquidation=result['closest_liq'],
+                max_hrs_no_fills=result['max_hrs_no_fills'], max_hrs_no_fills_same_side=result['max_hrs_no_fills_same_side'])
 
 
 def backtest_tune(ticks: np.ndarray, backtest_config: dict, current_best: Union[dict, list] = None):
@@ -102,7 +128,8 @@ def backtest_tune(ticks: np.ndarray, backtest_config: dict, current_best: Union[
         if type(current_best) == list:
             for c in current_best:
                 c = clean_start_config(c, config, backtest_config['ranges'])
-                current_best_params.append(c)
+                if c not in current_best_params:
+                    current_best_params.append(c)
         else:
             current_best = clean_start_config(current_best, config, backtest_config['ranges'])
             current_best_params.append(current_best)
@@ -116,7 +143,11 @@ def backtest_tune(ticks: np.ndarray, backtest_config: dict, current_best: Union[
     analysis = tune.run(tune.with_parameters(wrap_backtest, ticks=ticks), metric='objective', mode='max', name='search',
                         search_alg=algo, scheduler=scheduler, num_samples=iters, config=config, verbose=1,
                         reuse_actors=True, local_dir=session_dirpath,
-                        progress_reporter=LogReporter(metric_columns=['daily_gain', 'closest_liquidation', 'objective'],
+                        progress_reporter=LogReporter(metric_columns=['daily_gain',
+                                                                      'closest_liquidation',
+                                                                      'max_hrs_no_fills',
+                                                                      'max_hrs_no_fills_same_side',
+                                                                      'objective'],
                                                       parameter_columns=[k for k in backtest_config['ranges'] if type(
                                                           config[k]) == ray.tune.sample.Float or type(
                                                           config[k]) == ray.tune.sample.Integer]))
@@ -128,10 +159,9 @@ def backtest_tune(ticks: np.ndarray, backtest_config: dict, current_best: Union[
 def save_results(analysis, backtest_config):
     df = analysis.results_df
     df.reset_index(inplace=True)
-    df.drop(columns=['trial_id', 'time_this_iter_s', 'done', 'timesteps_total', 'episodes_total', 'training_iteration',
-                     'experiment_id', 'date', 'timestamp', 'time_total_s', 'pid', 'hostname', 'node_ip',
-                     'time_since_restore', 'timesteps_since_restore', 'iterations_since_restore', 'experiment_tag'],
-            inplace=True)
+    df.rename(columns={column: column.replace('config.', '') for column in df.columns}, inplace=True)
+    df = df[list(backtest_config['ranges'].keys()) + ['daily_gain', 'closest_liquidation', 'max_hrs_no_fills',
+                                                      'max_hrs_no_fills_same_side', 'objective']].sort_values('objective', ascending=False)
     df.to_csv(os.path.join(backtest_config['session_dirpath'], 'results.csv'), index=False)
     print('Best candidate found:')
     pprint.pprint(analysis.best_config)

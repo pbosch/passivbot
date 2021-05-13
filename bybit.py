@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import hmac
 import json
-import sys
 from time import time
 from urllib.parse import urlencode
 
@@ -10,32 +9,12 @@ import aiohttp
 import numpy as np
 from dateutil import parser
 
-from passivbot import load_key_secret, print_, \
-    ts_to_date, flatten, Bot, start_bot, calc_min_order_qty_inverse, sort_dict_keys, calc_ema, \
-    iter_long_closes_inverse, iter_shrt_closes_inverse, iter_entries_inverse, \
-    iter_long_closes_linear, iter_shrt_closes_linear, iter_entries_linear, calc_long_pnl_linear, \
-    calc_long_pnl_inverse, calc_shrt_pnl_linear, \
-    calc_shrt_pnl_inverse, calc_cost_linear, calc_cost_inverse
+from passivbot import ts_to_date, print_, Bot, sort_dict_keys
+from jitted import calc_long_pnl, calc_shrt_pnl
 
 
 def first_capitalized(s: str):
     return s[0].upper() + s[1:].lower()
-
-
-def calc_isolated_long_liq_price(balance,
-                                 pos_size,
-                                 pos_price,
-                                 leverage,
-                                 mm=0.005) -> float:
-    return (pos_price * leverage) / (leverage + 1 - mm * leverage)
-
-
-def calc_isolated_shrt_liq_price(balance,
-                                 pos_size,
-                                 pos_price,
-                                 leverage,
-                                 mm=0.005) -> float:
-    return (pos_price * leverage) / (leverage - 1 + mm * leverage)
 
 
 def format_tick(tick: dict) -> dict:
@@ -66,18 +45,17 @@ def date_to_ts(date: str):
     return parser.parse(date).timestamp() * 1000
 
 
-async def create_bot(user: str, settings: str):
-    bot = Bybit(user, settings)
+async def create_bot(user: str, config: str):
+    bot = Bybit(user, config)
     await bot._init()
     return bot
 
 
 class Bybit(Bot):
-    def __init__(self, user: str, settings: dict):
+    def __init__(self, user: str, config: dict):
         self.exchange = 'bybit'
         self.min_notional = 0.0
-        super().__init__(user, settings)
-        self.key, self.secret = load_key_secret('bybit', user)
+        super().__init__(user, config)
         self.base_endpoint = 'https://api.bybit.com'
         self.endpoints = {}
         self.market_type = ''
@@ -87,6 +65,7 @@ class Bybit(Bot):
         if self.symbol.endswith('USDT'):
             print('linear perpetual')
             self.market_type = 'linear_perpetual'
+            self.inverse = self.config['inverse'] = False
             self.endpoints = {'position': '/private/linear/position/list',
                               'open_orders': '/private/linear/order/search',
                               'create_order': '/private/linear/order/create',
@@ -95,35 +74,8 @@ class Bybit(Bot):
                               'websocket': 'wss://stream.bybit.com/realtime_public',
                               'created_at_key': 'created_time'}
 
-            self.iter_long_closes = lambda balance, pos_size, pos_price, lowest_ask: \
-                iter_long_closes_linear(self.price_step, self.qty_step, self.min_qty, self.min_cost,
-                                        self.contract_multiplier, self.qty_pct, self.leverage,
-                                        self.min_markup, self.markup_range, self.n_close_orders,
-                                        balance, pos_size, pos_price, lowest_ask)
-
-            self.iter_shrt_closes = lambda balance, pos_size, pos_price, highest_bid: \
-                iter_shrt_closes_linear(self.price_step, self.qty_step, self.min_qty, self.min_cost,
-                                        self.contract_multiplier, self.qty_pct, self.leverage,
-                                        self.min_markup, self.markup_range, self.n_close_orders,
-                                        balance, pos_size, pos_price, highest_bid)
-
-            self.iter_entries = lambda balance, long_psize, long_pprice, shrt_psize, shrt_pprice, \
-                                       liq_price, highest_bid, lowest_ask, ema, last_price, do_long, do_shrt: \
-                iter_entries_linear(self.price_step, self.qty_step, self.min_qty, self.min_cost,
-                                    self.contract_multiplier, self.ddown_factor, self.qty_pct,
-                                    self.leverage, self.grid_spacing, self.grid_coefficient,
-                                    self.ema_spread, self.stop_loss_liq_diff, self.stop_loss_pos_pct,
-                                    balance, long_psize, long_pprice, shrt_psize, shrt_pprice,
-                                    liq_price, highest_bid, lowest_ask, ema, last_price, do_long, do_shrt)
-
-            self.long_pnl_f = calc_long_pnl_linear
-            self.shrt_pnl_f = calc_shrt_pnl_linear
-            self.cost_f = calc_cost_linear
-
         else:
-            self.long_pnl_f = calc_long_pnl_inverse
-            self.shrt_pnl_f = calc_shrt_pnl_inverse
-            self.cost_f = calc_cost_inverse
+            self.inverse = self.config['inverse'] = True
             if self.symbol.endswith('USD'):
                 print('inverse perpetual')
                 self.market_type = 'inverse_perpetual'
@@ -146,27 +98,6 @@ class Bybit(Bot):
                                   'ticks': '/v2/public/trading-records',
                                   'websocket': 'wss://stream.bybit.com/realtime',
                                   'created_at_key': 'created_at'}
-
-            self.iter_long_closes = lambda balance, pos_size, pos_price, lowest_ask: \
-                iter_long_closes_inverse(self.price_step, self.qty_step, self.min_qty, self.min_cost,
-                                         self.contract_multiplier, self.qty_pct, self.leverage,
-                                         self.min_markup, self.markup_range, self.n_close_orders,
-                                         balance, pos_size, pos_price, lowest_ask)
-
-            self.iter_shrt_closes = lambda balance, pos_size, pos_price, highest_bid: \
-                iter_shrt_closes_inverse(self.price_step, self.qty_step, self.min_qty, self.min_cost,
-                                         self.contract_multiplier, self.qty_pct, self.leverage,
-                                         self.min_markup, self.markup_range, self.n_close_orders,
-                                         balance, pos_size, pos_price, highest_bid)
-
-            self.iter_entries = lambda balance, long_psize, long_pprice, shrt_psize, shrt_pprice, \
-                                       liq_price, highest_bid, lowest_ask, ema, last_price, do_long, do_shrt: \
-                iter_entries_inverse(self.price_step, self.qty_step, self.min_qty, self.min_cost,
-                                     self.contract_multiplier, self.ddown_factor, self.qty_pct,
-                                     self.leverage, self.grid_spacing, self.grid_coefficient,
-                                     self.ema_spread, self.stop_loss_liq_diff, self.stop_loss_pos_pct,
-                                     balance, long_psize, long_pprice, shrt_psize, shrt_pprice, liq_price,
-                                     highest_bid, lowest_ask, ema, last_price, do_long, do_shrt)
 
         self.endpoints['balance'] = '/v2/private/wallet/balance'
 
@@ -198,15 +129,12 @@ class Bybit(Bot):
         self.max_leverage = e['leverage_filter']['max_leverage']
         self.coin = e['base_currency']
         self.quot = e['quote_currency']
-        self.price_step = float(e['price_filter']['tick_size'])
-        self.qty_step = float(e['lot_size_filter']['qty_step'])
-        self.min_qty = float(e['lot_size_filter']['min_trading_qty'])
-        self.min_cost = 0.0
-        self.calc_min_qty = lambda price_: self.min_qty
-        self.calc_min_order_qty = lambda balance_, last_price: \
-            calc_min_order_qty_inverse(self.qyt_step, self.min_qty, self.min_cost,
-                                       self.qty_pct, self.leverage, balance_, last_price)
+        self.price_step = self.config['price_step'] = float(e['price_filter']['tick_size'])
+        self.qty_step = self.config['qty_step'] = float(e['lot_size_filter']['qty_step'])
+        self.min_qty = self.config['min_qty'] = float(e['lot_size_filter']['min_trading_qty'])
+        self.min_cost = self.config['min_cost'] = 0.0
         self.init_market_type()
+        await super()._init()
         await self.init_order_book()
         await self.update_position()
 
@@ -289,11 +217,13 @@ class Bybit(Bot):
                             'price': float(shrt_pos['entry_price']),
                             'leverage': float(shrt_pos['leverage']),
                             'liquidation_price': float(shrt_pos['liq_price'])}
-        position['long']['upnl'] = self.long_pnl_f(position['long']['price'], self.price,
-                                                   position['long']['size']) \
+        position['long']['upnl'] = calc_long_pnl(position['long']['price'], self.price,
+                                                 position['long']['size'], self.xk['inverse'],
+                                                 self.xk['contract_multiplier']) \
             if position['long']['price'] != 0.0 else 0.0
-        position['shrt']['upnl'] = self.shrt_pnl_f(position['shrt']['price'], self.price,
-                                                   position['shrt']['size']) \
+        position['shrt']['upnl'] = calc_shrt_pnl(position['shrt']['price'], self.price,
+                                                 position['shrt']['size'], self.xk['inverse'],
+                                                 self.xk['contract_multiplier']) \
             if position['shrt']['price'] != 0.0 else 0.0
         upnl = position['long']['upnl'] + position['shrt']['upnl']
         position['equity'] = position['wallet_balance'] + upnl
@@ -363,7 +293,7 @@ class Bybit(Bot):
     def calc_max_pos_size(self, balance: float, price: float):
         return balance * price * self.leverage * 0.95
 
-    async def init_exchange_settings(self):
+    async def init_exchange_config(self):
         try:
             # set cross mode
             if self.market_type == 'inverse_futures':
@@ -391,7 +321,6 @@ class Bybit(Bot):
             print(res)
         except Exception as e:
             print(e)
-        await self.init_ema()
 
     def standardize_websocket_ticks(self, data: dict) -> [dict]:
         ticks = []
@@ -410,5 +339,3 @@ class Bybit(Bot):
     async def subscribe_ws(self, ws):
         params = {'op': 'subscribe', 'args': ['trade.' + self.symbol]}
         await ws.send(json.dumps(params))
-
-
