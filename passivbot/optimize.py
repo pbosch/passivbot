@@ -18,8 +18,8 @@ from ray.tune.suggest.nevergrad import NevergradSearch
 
 from backtest import backtest, plot_wrap
 from backtest_helpers.analyze import analyze_fills, get_empty_analysis, objective_function
-from backtest_helpers.downloader import Downloader
 from backtest_helpers.reporter import LogReporter
+from downloader import Downloader
 from helpers.helpers import ts_to_date, add_argparse_args, prep_config
 from helpers.jitted import round_
 from walk_forward_optimization import WFO

@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 
 from backtest_helpers.analyze import analyze_fills
-from backtest_helpers.downloader import Downloader
 from backtest_helpers.plotting import dump_plots
+from downloader import Downloader
 from helpers.helpers import make_get_filepath, ts_to_date, get_keys, add_argparse_args, prep_config, load_live_config
 from helpers.jitted import calc_diff, round_, iter_entries, iter_long_closes, iter_shrt_closes, calc_available_margin, \
     calc_liq_price_binance, calc_liq_price_bybit, calc_new_psize_pprice, calc_long_pnl, calc_shrt_pnl, calc_cost, \

@@ -13,6 +13,7 @@ from dateutil import parser, tz
 from helpers.helpers import create_binance_bot, create_bybit_bot, add_argparse_args, prep_config, print_, \
     make_get_filepath, get_dummy_settings, ts_to_date
 
+
 class Downloader:
     """
     Downloader class for tick data. Fetches data from specified time until now or specified time.
