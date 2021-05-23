@@ -1,13 +1,17 @@
-import gc
-
-import hjson
-import pandas as pd
 import argparse
+import asyncio
+import datetime
+import gc
+import os
+import sys
+from time import sleep, time
+
+import numpy as np
+import pandas as pd
 from dateutil import parser, tz
-from time import sleep
 
-from passivbot import *
-
+from helpers.helpers import create_binance_bot, create_bybit_bot, add_argparse_args, prep_config, print_, \
+    make_get_filepath, get_dummy_settings, ts_to_date
 
 class Downloader:
     """
@@ -461,7 +465,7 @@ class Downloader:
                            (df.is_buyer_maker == df.is_buyer_maker.shift(1)))).cumsum()).agg(
             {'price': 'first', 'is_buyer_maker': 'first', 'timestamp': 'first', 'qty': 'sum'})
 
-        #compressed_ticks = df[["price", "is_buyer_maker", "timestamp", "qty"]].values
+        # compressed_ticks = df[["price", "is_buyer_maker", "timestamp", "qty"]].values
         compressed_ticks = df[["price", "is_buyer_maker", "timestamp"]].values
 
         if single_file:
@@ -520,88 +524,7 @@ class Downloader:
             return price_data, buyer_maker_data, time_data
 
 
-def get_dummy_settings(user: str, exchange: str, symbol: str):
-    return {**{k: 1.0 for k in get_keys()},
-            **{'user': user, 'exchange': exchange, 'symbol': symbol, 'config_name': '',
-               'logging_level': 0}}
-
-
-async def fetch_market_specific_settings(user: str, exchange: str, symbol: str):
-    tmp_live_settings = get_dummy_settings(user, exchange, symbol)
-    settings_from_exchange = {}
-    if exchange == 'binance':
-        bot = await create_binance_bot(tmp_live_settings)
-        settings_from_exchange['maker_fee'] = 0.00018
-        settings_from_exchange['taker_fee'] = 0.00036
-        settings_from_exchange['exchange'] = 'binance'
-    elif exchange == 'bybit':
-        bot = await create_bybit_bot(tmp_live_settings)
-        settings_from_exchange['maker_fee'] = -0.00025
-        settings_from_exchange['taker_fee'] = 0.00075
-        settings_from_exchange['exchange'] = 'bybit'
-    else:
-        raise Exception(f'unknown exchange {exchange}')
-    await bot.session.close()
-    if 'inverse' in bot.market_type:
-        settings_from_exchange['inverse'] = True
-    elif 'linear' in bot.market_type:
-        settings_from_exchange['inverse'] = False
-    else:
-        raise Exception('unknown market type')
-    for key in ['max_leverage', 'min_qty', 'min_cost', 'qty_step', 'price_step', 'max_leverage',
-                'contract_multiplier']:
-        settings_from_exchange[key] = getattr(bot, key)
-    return settings_from_exchange
-
-
-async def prep_config(args) -> dict:
-    try:
-        bc = hjson.load(open(args.backtest_config_path))
-    except Exception as e:
-        raise Exception('failed to load backtest config', args.backtest_config_path, e)
-    try:
-        oc = hjson.load(open(args.optimize_config_path))
-    except Exception as e:
-        raise Exception('failed to load optimize config', args.optimize_config_path, e)
-    config = {**oc, **bc}
-    if args.symbol != 'none':
-        config['symbol'] = args.symbol
-    if args.user != 'none':
-        config['user'] = args.user
-    end_date = config['end_date'] if config['end_date'] and config['end_date'] != -1 else ts_to_date(time())[:16]
-    config['session_name'] = f"{config['start_date'].replace(' ', '').replace(':', '').replace('.', '')}_" \
-                             f"{end_date.replace(' ', '').replace(':', '').replace('.', '')}"
-
-    base_dirpath = os.path.join('backtests', config['exchange'], config['symbol'])
-    config['caches_dirpath'] = make_get_filepath(os.path.join(base_dirpath, 'caches', ''))
-    config['optimize_dirpath'] = make_get_filepath(os.path.join(base_dirpath, 'optimize', ''))
-    config['plots_dirpath'] = make_get_filepath(os.path.join(base_dirpath, 'plots', ''))
-
-    if os.path.exists((mss := config['caches_dirpath'] + 'market_specific_settings.json')):
-        market_specific_settings = json.load(open(mss))
-    else:
-        market_specific_settings = await fetch_market_specific_settings(config['user'], config['exchange'],
-                                                                        config['symbol'])
-        json.dump(market_specific_settings, open(mss, 'w'), indent=4)
-    config.update(market_specific_settings)
-
-    # setting absolute min/max ranges
-    for key in ['qty_pct', 'ddown_factor', 'ema_span', 'grid_spacing']:
-        if key in config['ranges']:
-            config['ranges'][key][0] = max(0.0, config['ranges'][key][0])
-    for key in ['qty_pct']:
-        if key in config['ranges']:
-            config['ranges'][key][1] = min(1.0, config['ranges'][key][1])
-
-    if 'leverage' in config['ranges']:
-        config['ranges']['leverage'][1] = min(config['ranges']['leverage'][1], config['max_leverage'])
-        config['ranges']['leverage'][0] = min(config['ranges']['leverage'][0], config['ranges']['leverage'][1])
-
-    return config
-
-
 async def main():
-
     parser = argparse.ArgumentParser(prog='Downloader', description='Download ticks from exchange API.')
     parser = add_argparse_args(parser)
 
@@ -612,7 +535,6 @@ async def main():
     if not args.download_only:
         await downloader.prepare_files(True)
     sleep(0.1)
-
 
 
 if __name__ == "__main__":

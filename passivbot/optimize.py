@@ -16,12 +16,12 @@ from ray.tune.schedulers import AsyncHyperBandScheduler
 from ray.tune.suggest import ConcurrencyLimiter
 from ray.tune.suggest.nevergrad import NevergradSearch
 
-from analyze import analyze_fills, get_empty_analysis, objective_function
 from backtest import backtest, plot_wrap
-from downloader import Downloader, prep_config
-from jitted import round_
-from passivbot import ts_to_date, add_argparse_args
-from reporter import LogReporter
+from backtest_helpers.analyze import analyze_fills, get_empty_analysis, objective_function
+from backtest_helpers.downloader import Downloader
+from backtest_helpers.reporter import LogReporter
+from helpers.helpers import ts_to_date, add_argparse_args, prep_config
+from helpers.jitted import round_
 from walk_forward_optimization import WFO
 
 os.environ['TUNE_GLOBAL_CHECKPOINT_S'] = '120'

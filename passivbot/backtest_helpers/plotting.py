@@ -1,9 +1,11 @@
-import matplotlib.pyplot as plt
-import pandas as pd
-import numpy as np
 import json
-from jitted import round_dynamic
-from analyze import candidate_to_live_config
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from backtest_helpers.analyze import candidate_to_live_config
+from helpers.jitted import round_dynamic
 
 
 def dump_plots(result: dict, fdf: pd.DataFrame, df: pd.DataFrame):
@@ -15,11 +17,13 @@ def dump_plots(result: dict, fdf: pd.DataFrame, df: pd.DataFrame):
 
     lines = []
     lines.append(f"gain percentage {round_dynamic(result['result']['gain'] * 100 - 100, 4)}%")
-    lines.append(f"average_daily_gain percentage {round_dynamic((result['result']['average_daily_gain'] - 1) * 100, 3)}%")
+    lines.append(
+        f"average_daily_gain percentage {round_dynamic((result['result']['average_daily_gain'] - 1) * 100, 3)}%")
     lines.append(f"closest_liq percentage {round_dynamic(result['result']['closest_liq'] * 100, 4)}%")
     lines.append(f"starting balance {round_dynamic(result['starting_balance'], 3)}")
 
-    for key in [k for k in result['result'] if k not in ['gain', 'average_daily_gain', 'closest_liq', 'do_long', 'do_shrt']]:
+    for key in [k for k in result['result'] if
+                k not in ['gain', 'average_daily_gain', 'closest_liq', 'do_long', 'do_shrt']]:
         lines.append(f"{key} {round_dynamic(result['result'][key], 6)}")
     lines.append(f"long: {result['do_long']}, short: {result['do_shrt']}")
 
@@ -107,4 +111,3 @@ def plot_fills(df, fdf, side_: int = 0, liq_thr=0.1):
     if 'liq_price' in fdf.columns:
         fdf.liq_price.where(fdf.liq_diff < liq_thr, np.nan).plot(style='k--')
     return plt
-

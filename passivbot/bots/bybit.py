@@ -7,53 +7,66 @@ from urllib.parse import urlencode
 
 import aiohttp
 import numpy as np
-from dateutil import parser
 
-from passivbot import ts_to_date, print_, Bot, sort_dict_keys
-from jitted import calc_long_pnl, calc_shrt_pnl
-
-
-def first_capitalized(s: str):
-    return s[0].upper() + s[1:].lower()
+from bots.base import Bot
+from helpers.helpers import ts_to_date,date_to_ts, first_capitalized,print_, format_tick,sort_dict_keys
+from helpers.jitted import calc_long_pnl, calc_shrt_pnl
 
 
-def format_tick(tick: dict) -> dict:
-    return {'trade_id': int(tick['id']),
-            'price': float(tick['price']),
-            'qty': float(tick['qty']),
-            'timestamp': date_to_ts(tick['time']),
-            'is_buyer_maker': tick['side'] == 'Sell'}
-
-
-async def fetch_ticks(cc, symbol: str, from_id: int = None, do_print=True) -> [dict]:
-    params = {'symbol': symbol, 'limit': 1000}
-    if from_id:
-        params['from'] = max(0, from_id)
-    try:
-        fetched_trades = await cc.v2_public_get_trading_records(params=params)
-    except Exception as e:
-        print(e)
-        return []
-    trades = [format_tick(t) for t in fetched_trades['result']]
-    if do_print:
-        print_(['fetched trades', symbol, trades[0]['trade_id'],
-                ts_to_date(trades[0]['timestamp'] / 1000)])
-    return trades
-
-
-def date_to_ts(date: str):
-    return parser.parse(date).timestamp() * 1000
-
-
-class Bybit(Bot):
+class BybitBot(Bot):
     def __init__(self, config: dict):
+        super().__init__(config)
         self.exchange = 'bybit'
         self.min_notional = 0.0
-        super().__init__(config)
         self.base_endpoint = 'https://api.bybit.com'
         self.endpoints = {}
         self.market_type = ''
         self.session = aiohttp.ClientSession()
+
+    async def public_get(self, url: str, params: dict = {}) -> dict:
+        async with self.session.get(self.base_endpoint + url, params=params) as response:
+            result = await response.text()
+        return json.loads(result)
+
+    async def private_(self, type_: str, url: str, params: dict = {}) -> dict:
+        timestamp = int(time() * 1000)
+        params.update({'api_key': self.key, 'timestamp': timestamp})
+        for k in params:
+            if type(params[k]) == bool:
+                params[k] = 'true' if params[k] else 'false'
+            elif type(params[k]) == float:
+                params[k] = str(params[k])
+        params['sign'] = hmac.new(self.secret.encode('utf-8'),
+                                  urlencode(sort_dict_keys(params)).encode('utf-8'),
+                                  hashlib.sha256).hexdigest()
+        async with getattr(self.session, type_)(self.base_endpoint + url, params=params) as response:
+            result = await response.text()
+        return json.loads(result)
+
+    async def private_get(self, url: str, params: dict = {}) -> dict:
+        return await self.private_('get', url, params)
+
+    async def private_post(self, url: str, params: dict = {}) -> dict:
+        return await self.private_('post', url, params)
+
+    async def _init(self):
+        info = await self.public_get('/v2/public/symbols')
+        for e in info['result']:
+            if e['name'] == self.symbol:
+                break
+        else:
+            raise Exception('symbol missing')
+        self.max_leverage = e['leverage_filter']['max_leverage']
+        self.coin = e['base_currency']
+        self.quot = e['quote_currency']
+        self.price_step = self.config['price_step'] = float(e['price_filter']['tick_size'])
+        self.qty_step = self.config['qty_step'] = float(e['lot_size_filter']['qty_step'])
+        self.min_qty = self.config['min_qty'] = float(e['lot_size_filter']['min_trading_qty'])
+        self.min_cost = self.config['min_cost'] = 0.0
+        self.init_market_type()
+        await super()._init()
+        await self.init_order_book()
+        await self.update_position()
 
     def init_market_type(self):
         if self.symbol.endswith('USDT'):
@@ -95,6 +108,40 @@ class Bybit(Bot):
 
         self.endpoints['balance'] = '/v2/private/wallet/balance'
 
+    async def init_order_book(self):
+        ticker = await self.private_get('/v2/public/tickers', {'symbol': self.symbol})
+        self.ob = [float(ticker['result'][0]['bid_price']), float(ticker['result'][0]['ask_price'])]
+        self.price = float(ticker['result'][0]['last_price'])
+
+    async def init_exchange_config(self):
+        try:
+            # set cross mode
+            if self.market_type == 'inverse_futures':
+                res = await asyncio.gather(
+                    self.private_post('/futures/private/position/leverage/save',
+                                      {'symbol': self.symbol, 'position_idx': 1,
+                                       'buy_leverage': 0, 'sell_leverage': 0}),
+                    self.private_post('/futures/private/position/leverage/save',
+                                      {'symbol': self.symbol, 'position_idx': 2,
+                                       'buy_leverage': 0, 'sell_leverage': 0})
+                )
+                print(res)
+                res = await self.private_post('/futures/private/position/switch-mode',
+                                              {'symbol': self.symbol, 'mode': 3})
+                print(res)
+            elif self.market_type == 'linear_perpetual':
+                res = await self.private_post('/private/linear/position/switch-isolated',
+                                              {'symbol': self.symbol, 'is_isolated': False,
+                                               'buy_leverage': 0,
+                                               'sell_leverage': 0})
+            elif self.market_type == 'inverse_perpetual':
+                res = await self.private_post('/v2/private/position/leverage/save',
+                                              {'symbol': self.symbol, 'leverage': 0})
+
+            print(res)
+        except Exception as e:
+            print(e)
+
     def determine_pos_side(self, o: dict) -> str:
         side = o['side'].lower()
         if side == 'buy':
@@ -113,30 +160,6 @@ class Bybit(Bot):
                 position_side = 'both'
         return position_side
 
-    async def _init(self):
-        info = await self.public_get('/v2/public/symbols')
-        for e in info['result']:
-            if e['name'] == self.symbol:
-                break
-        else:
-            raise Exception('symbol missing')
-        self.max_leverage = e['leverage_filter']['max_leverage']
-        self.coin = e['base_currency']
-        self.quot = e['quote_currency']
-        self.price_step = self.config['price_step'] = float(e['price_filter']['tick_size'])
-        self.qty_step = self.config['qty_step'] = float(e['lot_size_filter']['qty_step'])
-        self.min_qty = self.config['min_qty'] = float(e['lot_size_filter']['min_trading_qty'])
-        self.min_cost = self.config['min_cost'] = 0.0
-        self.init_market_type()
-        await super()._init()
-        await self.init_order_book()
-        await self.update_position()
-
-    async def init_order_book(self):
-        ticker = await self.private_get('/v2/public/tickers', {'symbol': self.symbol})
-        self.ob = [float(ticker['result'][0]['bid_price']), float(ticker['result'][0]['ask_price'])]
-        self.price = float(ticker['result'][0]['last_price'])
-
     async def fetch_open_orders(self) -> [dict]:
         fetched = await self.private_get(self.endpoints['open_orders'], {'symbol': self.symbol})
 
@@ -149,32 +172,6 @@ class Bybit(Bot):
                  'position_side': self.determine_pos_side(elm),
                  'timestamp': date_to_ts(elm[self.endpoints['created_at_key']])}
                 for elm in fetched['result']]
-
-    async def public_get(self, url: str, params: dict = {}) -> dict:
-        async with self.session.get(self.base_endpoint + url, params=params) as response:
-            result = await response.text()
-        return json.loads(result)
-
-    async def private_(self, type_: str, url: str, params: dict = {}) -> dict:
-        timestamp = int(time() * 1000)
-        params.update({'api_key': self.key, 'timestamp': timestamp})
-        for k in params:
-            if type(params[k]) == bool:
-                params[k] = 'true' if params[k] else 'false'
-            elif type(params[k]) == float:
-                params[k] = str(params[k])
-        params['sign'] = hmac.new(self.secret.encode('utf-8'),
-                                  urlencode(sort_dict_keys(params)).encode('utf-8'),
-                                  hashlib.sha256).hexdigest()
-        async with getattr(self.session, type_)(self.base_endpoint + url, params=params) as response:
-            result = await response.text()
-        return json.loads(result)
-
-    async def private_get(self, url: str, params: dict = {}) -> dict:
-        return await self.private_('get', url, params)
-
-    async def private_post(self, url: str, params: dict = {}) -> dict:
-        return await self.private_('post', url, params)
 
     async def fetch_position(self) -> dict:
         position = {}
@@ -261,7 +258,7 @@ class Bybit(Bot):
                 'position_side': order['position_side'],
                 'qty': order['qty'], 'price': order['price']}
 
-    async def fetch_ticks(self, from_id: int = None, do_print: bool = True):
+    async def fetch_ticks(self, from_id: int = None, do_print: bool = True, **kwargs):
         params = {'symbol': self.symbol, 'limit': 1000}
         if from_id is not None:
             params['from'] = max(0, from_id)
@@ -287,40 +284,12 @@ class Bybit(Bot):
     def calc_max_pos_size(self, balance: float, price: float):
         return balance * price * self.leverage * 0.95
 
-    async def init_exchange_config(self):
-        try:
-            # set cross mode
-            if self.market_type == 'inverse_futures':
-                res = await asyncio.gather(
-                    self.private_post('/futures/private/position/leverage/save',
-                                      {'symbol': self.symbol, 'position_idx': 1,
-                                       'buy_leverage': 0, 'sell_leverage': 0}),
-                    self.private_post('/futures/private/position/leverage/save',
-                                      {'symbol': self.symbol, 'position_idx': 2,
-                                       'buy_leverage': 0, 'sell_leverage': 0})
-                )
-                print(res)
-                res = await self.private_post('/futures/private/position/switch-mode',
-                                              {'symbol': self.symbol, 'mode': 3})
-                print(res)
-            elif self.market_type == 'linear_perpetual':
-                res = await self.private_post('/private/linear/position/switch-isolated',
-                                              {'symbol': self.symbol, 'is_isolated': False,
-                                               'buy_leverage': 0,
-                                               'sell_leverage': 0})
-            elif self.market_type == 'inverse_perpetual':
-                res = await self.private_post('/v2/private/position/leverage/save',
-                                              {'symbol': self.symbol, 'leverage': 0})
-
-            print(res)
-        except Exception as e:
-            print(e)
-
     def standardize_websocket_ticks(self, data: dict) -> [dict]:
         ticks = []
         for e in data['data']:
             try:
-                ticks.append({'price': float(e['price']), 'qty': float(e['size']), 'is_buyer_maker': e['side'] == 'Sell'})
+                ticks.append(
+                    {'price': float(e['price']), 'qty': float(e['size']), 'is_buyer_maker': e['side'] == 'Sell'})
             except Exception as ex:
                 print('error in websocket tick', e, ex)
         return ticks

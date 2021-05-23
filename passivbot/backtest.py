@@ -1,20 +1,19 @@
+import argparse
 import asyncio
 import json
 import os
-import sys
 from time import time
-from analyze import analyze_fills
 
 import numpy as np
 import pandas as pd
-import argparse
-from plotting import dump_plots
 
-from downloader import Downloader, prep_config
-from jitted import calc_diff, round_, iter_entries, iter_long_closes, iter_shrt_closes, calc_available_margin, \
+from backtest_helpers.analyze import analyze_fills
+from backtest_helpers.downloader import Downloader
+from backtest_helpers.plotting import dump_plots
+from helpers.helpers import make_get_filepath, ts_to_date, get_keys, add_argparse_args, prep_config
+from helpers.jitted import calc_diff, round_, iter_entries, iter_long_closes, iter_shrt_closes, calc_available_margin, \
     calc_liq_price_binance, calc_liq_price_bybit, calc_new_psize_pprice, calc_long_pnl, calc_shrt_pnl, calc_cost, \
-    iter_indicator_chunks, round_dynamic
-from passivbot import make_get_filepath, ts_to_date, get_keys, add_argparse_args
+    iter_indicator_chunks
 
 
 def backtest(config: dict, ticks: np.ndarray, do_print=False) -> (list, list, bool):
@@ -292,7 +291,6 @@ def plot_wrap(bc, ticks, live_config):
 
 
 async def main():
-
     parser = argparse.ArgumentParser(prog='Backtest', description='Backtest given passivbot config.')
     parser.add_argument('live_config_path', type=str, help='path to live config to test')
     parser = add_argparse_args(parser)
@@ -323,4 +321,3 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-

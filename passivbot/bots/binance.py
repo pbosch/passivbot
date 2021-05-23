@@ -8,18 +8,18 @@ from urllib.parse import urlencode
 import aiohttp
 import numpy as np
 
-from passivbot import load_key_secret, print_, ts_to_date, Bot, sort_dict_keys
+from bots.base import Bot
+from helpers.helpers import print_, ts_to_date, sort_dict_keys
 
 
 class BinanceBot(Bot):
     def __init__(self, config: dict):
-        self.exchange = 'binance'
         super().__init__(config)
+        self.exchange = 'binance'
         self.max_pos_size_ito_usdt = 0.0
         self.max_pos_size_ito_coin = 0.0
         self.session = aiohttp.ClientSession()
         self.base_endpoint = ''
-        self.key, self.secret = load_key_secret('binance', config['user'])
 
     async def public_get(self, url: str, params: dict = {}) -> dict:
         async with self.session.get(self.base_endpoint + url, params=params) as response:
@@ -52,6 +52,49 @@ class BinanceBot(Bot):
 
     async def private_delete(self, url: str, params: dict = {}) -> dict:
         return await self.private_('delete', url, params)
+
+    async def _init(self):
+        self.init_market_type()
+        exchange_info, leverage_bracket = await asyncio.gather(
+            self.public_get(self.endpoints['exchange_info']),
+            self.private_get(self.endpoints['leverage_bracket']),
+        )
+        for e in exchange_info['symbols']:
+            if e['symbol'] == self.symbol:
+                self.coin = e['baseAsset']
+                self.quot = e['quoteAsset']
+                self.margin_coin = e['marginAsset']
+                self.pair = e['pair']
+                if self.market_type == 'inverse_coin_margined':
+                    self.contract_multiplier = self.config['contract_multiplier'] = \
+                        float(e['contractSize'])
+                price_precision = e['pricePrecision']
+                qty_precision = e['quantityPrecision']
+                for q in e['filters']:
+                    if q['filterType'] == 'LOT_SIZE':
+                        self.min_qty = self.config['min_qty'] = float(q['minQty'])
+                    elif q['filterType'] == 'MARKET_LOT_SIZE':
+                        self.qty_step = self.config['qty_step'] = float(q['stepSize'])
+                    elif q['filterType'] == 'PRICE_FILTER':
+                        self.price_step = self.config['price_step'] = float(q['tickSize'])
+                    elif q['filterType'] == 'MIN_NOTIONAL':
+                        self.min_cost = self.config['min_cost'] = float(q['notional'])
+                try:
+                    z = self.min_cost
+                except AttributeError:
+                    self.min_cost = self.config['min_cost'] = 0.0
+                break
+        max_lev = 10
+        for e in leverage_bracket:
+            if ('pair' in e and e['pair'] == self.pair) or \
+                    ('symbol' in e and e['symbol'] == self.symbol):
+                for br in e['brackets']:
+                    max_lev = max(max_lev, int(br['initialLeverage']))
+                break
+        self.max_leverage = max_lev
+        await super()._init()
+        await self.init_order_book()
+        await self.update_position()
 
     def init_market_type(self):
         if self.symbol.endswith('USDT'):
@@ -100,77 +143,12 @@ class BinanceBot(Bot):
                 'websocket': f"wss://dstream.binance.com/ws/{self.symbol.lower()}@aggTrade"
             }
 
-    async def _init(self):
-        self.init_market_type()
-        exchange_info, leverage_bracket = await asyncio.gather(
-            self.public_get(self.endpoints['exchange_info']),
-            self.private_get(self.endpoints['leverage_bracket']),
-        )
-        for e in exchange_info['symbols']:
-            if e['symbol'] == self.symbol:
-                self.coin = e['baseAsset']
-                self.quot = e['quoteAsset']
-                self.margin_coin = e['marginAsset']
-                self.pair = e['pair']
-                if self.market_type == 'inverse_coin_margined':
-                    self.contract_multiplier = self.config['contract_multiplier'] = \
-                        float(e['contractSize'])
-                price_precision = e['pricePrecision']
-                qty_precision = e['quantityPrecision']
-                for q in e['filters']:
-                    if q['filterType'] == 'LOT_SIZE':
-                        self.min_qty = self.config['min_qty'] = float(q['minQty'])
-                    elif q['filterType'] == 'MARKET_LOT_SIZE':
-                        self.qty_step = self.config['qty_step'] = float(q['stepSize'])
-                    elif q['filterType'] == 'PRICE_FILTER':
-                        self.price_step = self.config['price_step'] = float(q['tickSize'])
-                    elif q['filterType'] == 'MIN_NOTIONAL':
-                        self.min_cost = self.config['min_cost'] = float(q['notional'])
-                try:
-                    z = self.min_cost
-                except AttributeError:
-                    self.min_cost = self.config['min_cost'] = 0.0
-                break
-        max_lev = 10
-        for e in leverage_bracket:
-            if ('pair' in e and e['pair'] == self.pair) or \
-                    ('symbol' in e and e['symbol'] == self.symbol):
-                for br in e['brackets']:
-                    max_lev = max(max_lev, int(br['initialLeverage']))
-                break
-        self.max_leverage = max_lev
-        await super()._init()
-        await self.init_order_book()
-        await self.update_position()
-
-    async def check_if_other_positions(self, abort=True):
-        positions, open_orders = await asyncio.gather(
-            self.private_get(self.endpoints['position']),
-            self.private_get(self.endpoints['open_orders'])
-        )
-        do_abort = False
-        for e in positions:
-            if float(e['positionAmt']) != 0.0:
-                if e['symbol'] != self.symbol and self.margin_coin in e['symbol']:
-                    print('\n\nWARNING\n\n')
-                    print('account has position in other symbol:', e)
-                    print('\n\n')
-                    do_abort = True
-        for e in open_orders:
-            if e['symbol'] != self.symbol and self.margin_coin in e['symbol']:
-                print('\n\nWARNING\n\n')
-                print('account has open orders in other symbol:', e)
-                print('\n\n')
-                do_abort = True
-        if do_abort:
-            if abort:
-                raise Exception('please close other positions and cancel other open orders')
-        else:
-            print('no positions or open orders in other symbols sharing margin wallet')
-
-    async def execute_leverage_change(self):
-        return await self.private_post(self.endpoints['leverage'],
-                                       {'symbol': self.symbol, 'leverage': int(round(self.leverage))})
+    async def init_order_book(self):
+        ticker = await self.public_get(self.endpoints['ticker'], {'symbol': self.symbol})
+        if self.market_type == 'inverse_coin_margined':
+            ticker = ticker[0]
+        self.ob = [float(ticker['bidPrice']), float(ticker['askPrice'])]
+        self.price = np.random.choice(self.ob)
 
     async def init_exchange_config(self):
         try:
@@ -201,12 +179,34 @@ class BinanceBot(Bot):
                 raise Exception('failed to set hedge mode')
         await self.check_if_other_positions()
 
-    async def init_order_book(self):
-        ticker = await self.public_get(self.endpoints['ticker'], {'symbol': self.symbol})
-        if self.market_type == 'inverse_coin_margined':
-            ticker = ticker[0]
-        self.ob = [float(ticker['bidPrice']), float(ticker['askPrice'])]
-        self.price = np.random.choice(self.ob)
+    async def check_if_other_positions(self, abort=True):
+        positions, open_orders = await asyncio.gather(
+            self.private_get(self.endpoints['position']),
+            self.private_get(self.endpoints['open_orders'])
+        )
+        do_abort = False
+        for e in positions:
+            if float(e['positionAmt']) != 0.0:
+                if e['symbol'] != self.symbol and self.margin_coin in e['symbol']:
+                    print('\n\nWARNING\n\n')
+                    print('account has position in other symbol:', e)
+                    print('\n\n')
+                    do_abort = True
+        for e in open_orders:
+            if e['symbol'] != self.symbol and self.margin_coin in e['symbol']:
+                print('\n\nWARNING\n\n')
+                print('account has open orders in other symbol:', e)
+                print('\n\n')
+                do_abort = True
+        if do_abort:
+            if abort:
+                raise Exception('please close other positions and cancel other open orders')
+        else:
+            print('no positions or open orders in other symbols sharing margin wallet')
+
+    async def execute_leverage_change(self):
+        return await self.private_post(self.endpoints['leverage'],
+                                       {'symbol': self.symbol, 'leverage': int(round(self.leverage))})
 
     async def fetch_open_orders(self) -> [dict]:
         return [
@@ -319,13 +319,13 @@ class BinanceBot(Bot):
         try:
             fetched = await self.private_get(self.endpoints['income'], params)
             income = [{'symbol': x['symbol'],
-                      'incomeType': x['incomeType'],
-                      'income': float(x['income']),
-                      'asset': x['asset'],
-                      'info': x['info'],
-                      'timestamp': int(x['time']),
-                      'tranId': x['tranId'],
-                      'tradeId': x['tradeId']} for x in fetched]
+                       'incomeType': x['incomeType'],
+                       'income': float(x['income']),
+                       'asset': x['asset'],
+                       'info': x['info'],
+                       'timestamp': int(x['time']),
+                       'tranId': x['tranId'],
+                       'tradeId': x['tradeId']} for x in fetched]
         except Exception as e:
             print('error fetching incoming: ', e)
             return []

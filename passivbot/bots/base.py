@@ -1,132 +1,27 @@
 import asyncio
-import datetime
 import json
 import logging
 import os
-import signal
-import sys
 from collections import deque
 from pathlib import Path
 from time import time
 
 import numpy as np
-import argparse
-
-import telegram_bot
 import websockets
-
-from jitted import round_, calc_diff, calc_ema, calc_cost, iter_entries, iter_long_closes, \
-    iter_shrt_closes, compress_float
+from helpers.helpers import print_, get_keys, make_get_filepath, load_key_secret, filter_orders
+from helpers.jitted import round_, calc_diff, calc_ema, calc_cost, iter_entries, iter_long_closes, iter_shrt_closes, \
+    compress_float
 
 logging.getLogger("telegram").setLevel(logging.CRITICAL)
-
-def get_keys():
-    return ['inverse', 'do_long', 'do_shrt', 'qty_step', 'price_step', 'min_qty', 'min_cost',
-            'contract_multiplier', 'ddown_factor', 'qty_pct', 'leverage', 'n_close_orders',
-            'grid_spacing', 'pos_margin_grid_coeff', 'volatility_grid_coeff',
-            'volatility_qty_coeff', 'min_markup', 'markup_range', 'ema_span', 'ema_spread',
-            'stop_loss_liq_diff', 'stop_loss_pos_pct', 'entry_liq_diff_thr']
-
-
-def sort_dict_keys(d):
-    if type(d) == list:
-        return [sort_dict_keys(e) for e in d]
-    if type(d) != dict:
-        return d
-    return {key: sort_dict_keys(d[key]) for key in sorted(d)}
-
-
-def flatten_dict(d, parent_key='', sep='_'):
-    items = []
-    for k, v in d.items():
-        new_key = parent_key + sep + k if parent_key else k
-        if type(v) == dict:
-            items.extend(flatten_dict(v, new_key, sep=sep).items())
-        else:
-            items.append((new_key, v))
-    return dict(items)
-
-
-def make_get_filepath(filepath: str) -> str:
-    '''
-    if not is path, creates dir and subdirs for path, returns path
-    '''
-    dirpath = os.path.dirname(filepath) if filepath[-1] != '/' else filepath
-    if not os.path.isdir(dirpath):
-        os.makedirs(dirpath)
-    return filepath
-
-
-def load_key_secret(exchange: str, user: str) -> (str, str):
-    try:
-        keyfile = json.load(open('api-keys.json'))
-        # Checks that the user exists, and it is for the correct exchange
-        if user in keyfile and keyfile[user]["exchange"] == exchange:
-
-            # If we need to get the `market` key:
-            # market = keyfile[user]["market"]
-            # print("The Market Type is " + str(market))
-
-            keyList = [str(keyfile[user]["key"]), str(keyfile[user]["secret"])]
-
-            return keyList
-        elif user not in keyfile or keyfile[user]["exchange"] != exchange:
-            print("Looks like the keys aren't configured yet, or you entered the wrong username!")
-        raise Exception('API KeyFile Missing!')
-    except FileNotFoundError:
-        print("File Not Found!")
-        raise Exception('API KeyFile Missing!')
-
-
-def print_(args, r=False, n=False):
-    line = ts_to_date(time())[:19] + '  '
-    str_args = '{} ' * len(args)
-    line += str_args.format(*args)
-    if n:
-        print('\n' + line, end=' ')
-    elif r:
-        print('\r' + line, end=' ')
-    else:
-        print(line)
-    return line
-
-
-def ts_to_date(timestamp: float) -> str:
-    return str(datetime.datetime.fromtimestamp(timestamp)).replace(' ', 'T')
-
-
-def filter_orders(actual_orders: [dict],
-                  ideal_orders: [dict],
-                  keys: [str] = ['symbol', 'side', 'qty', 'price']) -> ([dict], [dict]):
-    # returns (orders_to_delete, orders_to_create)
-
-    if not actual_orders:
-        return [], ideal_orders
-    if not ideal_orders:
-        return actual_orders, []
-    actual_orders = actual_orders.copy()
-    orders_to_create = []
-    ideal_orders_cropped = [{k: o[k] for k in keys} for o in ideal_orders]
-    actual_orders_cropped = [{k: o[k] for k in keys} for o in actual_orders]
-    for ioc, io in zip(ideal_orders_cropped, ideal_orders):
-        matches = [(aoc, ao) for aoc, ao in zip(actual_orders_cropped, actual_orders) if aoc == ioc]
-        if matches:
-            actual_orders.remove(matches[0][1])
-            actual_orders_cropped.remove(matches[0][0])
-        else:
-            orders_to_create.append(io)
-    return actual_orders, orders_to_create
-
-
-def flatten(lst: list) -> list:
-    return [y for x in lst for y in x]
 
 
 class LockNotAvailableException(Exception):
     pass
 
+
 class Bot:
     def __init__(self, config: dict):
+        self.exchange = ''
         self.config = config
         self.telegram = None
         self.xk = {}
@@ -138,7 +33,7 @@ class Bot:
         self.ema_alpha_ = 1 - self.ema_alpha
 
         self.ts_locked = {'cancel_orders': 0, 'decide': 0, 'update_open_orders': 0,
-                          'update_position': 0, 'print': 0, 'create_orders': 0}
+                          'update_position': 0, 'print': 0, 'create_orders': 0.0}
         self.ts_released = {k: 1 for k in self.ts_locked}
 
         self.position = {}
@@ -161,7 +56,7 @@ class Bot:
 
         self.log_filepath = make_get_filepath(f"logs/{self.exchange}/{config['config_name']}.log")
 
-        self.key, self.secret = load_key_secret(config['exchange'], self.user)
+        self.key, self.secret = load_key_secret(config['exchange'], config['user'])
 
         self.log_level = 0
 
@@ -187,55 +82,46 @@ class Bot:
     async def _init(self):
         self.xk = {k: float(self.config[k]) for k in get_keys()}
 
+    def init_market_type(self):
+        self.market_type = ''
+        self.inverse = False
+        self.base_endpoint = ''
+        self.endpoints = {}
+        raise NotImplementedError
+
+    async def init_order_book(self):
+        raise NotImplementedError
+
+    async def init_exchange_config(self):
+        raise NotImplementedError
+
+    async def init_indicators(self):
+        ticks = await self.fetch_compressed_ticks()
+        ema = ticks[0]['price']
+        self.tick_prices_deque = deque(maxlen=self.ema_span)
+        for tick in ticks:
+            self.tick_prices_deque.append(tick['price'])
+            ema = ema * self.ema_alpha_ + tick['price'] * self.ema_alpha
+        if len(self.tick_prices_deque) < self.ema_span:
+            print('\nwarning: insufficient ticks fetched, filling deque with duplicate ticks...')
+            print('ema and volatility will be inaccurate until deque is filled with websocket ticks')
+            while len(self.tick_prices_deque) < self.ema_span:
+                self.tick_prices_deque.extend([t['price'] for t in ticks])
+        self.ema = ema
+        self.sum_prices = sum(self.tick_prices_deque)
+        self.sum_prices_squared = sum([e ** 2 for e in self.tick_prices_deque])
+        self.price_std = np.sqrt((self.sum_prices_squared / len(self.tick_prices_deque) -
+                                  ((self.sum_prices / len(self.tick_prices_deque)) ** 2)))
+        self.volatility = self.price_std / self.ema
+        print('\ndebug len ticks, prices deque, ema_span')
+        print(len(ticks), len(self.tick_prices_deque), self.ema_span)
+
     def dump_log(self, data) -> None:
         if self.config['logging_level'] > 0:
             with open(self.log_filepath, 'a') as f:
                 f.write(json.dumps({**{'log_timestamp': time()}, **data}) + '\n')
 
-    async def update_open_orders(self) -> None:
-        if self.ts_locked['update_open_orders'] > self.ts_released['update_open_orders']:
-            return
-        try:
-            open_orders = await self.fetch_open_orders()
-            self.highest_bid, self.lowest_ask = 0.0, 9.9e9
-            for o in open_orders:
-                if o['side'] == 'buy':
-                    self.highest_bid = max(self.highest_bid, o['price'])
-                elif o['side'] == 'sell':
-                    self.lowest_ask = min(self.lowest_ask, o['price'])
-            if self.open_orders != open_orders:
-                self.dump_log({'log_type': 'open_orders', 'data': open_orders})
-            self.open_orders = open_orders
-            self.ts_released['update_open_orders'] = time()
-        except Exception as e:
-            print('error with update open orders', e)
-
-    async def update_position(self) -> None:
-        # also updates open orders
-        if self.ts_locked['update_position'] > self.ts_released['update_position']:
-            return
-        self.ts_locked['update_position'] = time()
-        try:
-            position, _ = await asyncio.gather(self.fetch_position(),
-                                               self.update_open_orders())
-            position['used_margin'] = \
-                ((calc_cost(position['long']['size'], position['long']['price'],
-                            self.xk['inverse'], self.xk['contract_multiplier'])
-                  if position['long']['price'] else 0.0) +
-                 (calc_cost(position['shrt']['size'], position['shrt']['price'],
-                            self.xk['inverse'], self.xk['contract_multiplier'])
-                  if position['shrt']['price'] else 0.0)) / self.leverage
-            position['available_margin'] = (position['equity'] - position['used_margin']) * 0.9
-            position['long']['liq_diff'] = calc_diff(position['long']['liquidation_price'], self.price)
-            position['shrt']['liq_diff'] = calc_diff(position['shrt']['liquidation_price'], self.price)
-            if self.position != position:
-                self.dump_log({'log_type': 'position', 'data': position})
-            self.position = position
-            self.ts_released['update_position'] = time()
-        except Exception as e:
-            print('error with update position', e)
-
-    async def create_orders(self, orders_to_create: [dict]) -> dict:
+    async def create_orders(self, orders_to_create: [dict]) -> [dict]:
         if not orders_to_create:
             return
         if self.ts_locked['create_orders'] > self.ts_released['create_orders']:
@@ -296,22 +182,63 @@ class Bot:
         self.ts_released['cancel_orders'] = time()
         return canceled_orders
 
-    def stop(self, signum=None, frame=None) -> None:
-        print("\nStopping passivbot, please wait...")
+    async def cancel_and_create(self):
+        await asyncio.sleep(0.005)
+        await self.update_position()
+        await asyncio.sleep(0.005)
+        if any([self.ts_locked[k_] > self.ts_released[k_]
+                for k_ in [x for x in self.ts_locked if x != 'decide']]):
+            return
+        to_cancel, to_create = filter_orders(self.open_orders,
+                                             self.calc_orders(),
+                                             keys=['side', 'position_side', 'qty', 'price'])
+        to_cancel = sorted(to_cancel, key=lambda x: calc_diff(x['price'], self.price))
+        to_create = sorted(to_create, key=lambda x: calc_diff(x['price'], self.price))
+        results = []
+        if to_cancel:
+            results.append(asyncio.create_task(self.cancel_orders(to_cancel[:self.n_orders_per_execution])))
+            await asyncio.sleep(0.005)  # sleep 5 ms between sending cancellations and creations
+        if to_create:
+            results.append(await self.create_orders(to_create[:self.n_orders_per_execution]))
+        await asyncio.sleep(0.005)
+        await self.update_position()
+        if any(results):
+            print()
+        return results
+
+    async def update_open_orders(self) -> None:
+        if self.ts_locked['update_open_orders'] > self.ts_released['update_open_orders']:
+            return
         try:
-            self.stop_websocket = True
-            if self.telegram is not None:
-                self.telegram.exit()
-            else:
-                print("No telegram active")
+            open_orders = await self.fetch_open_orders()
+            self.highest_bid, self.lowest_ask = 0.0, 9.9e9
+            for o in open_orders:
+                if o['side'] == 'buy':
+                    self.highest_bid = max(self.highest_bid, o['price'])
+                elif o['side'] == 'sell':
+                    self.lowest_ask = min(self.lowest_ask, o['price'])
+            if self.open_orders != open_orders:
+                self.dump_log({'log_type': 'open_orders', 'data': open_orders})
+            self.open_orders = open_orders
+            self.ts_released['update_open_orders'] = time()
         except Exception as e:
-            print(f"An error occurred during shutdown: {e}")
+            print('error with update open orders', e)
 
-    def pause(self) -> None:
-        self.process_websocket_ticks = False
+    async def fetch_open_orders(self) -> [dict]:
+        raise NotImplementedError
 
-    def resume(self) -> None:
-        self.process_websocket_ticks = True
+    async def fetch_position(self) -> dict:
+        raise NotImplementedError
+
+    async def execute_order(self, order: dict) -> dict:
+        raise NotImplementedError
+
+    async def execute_cancellation(self, order: dict) -> [dict]:
+        raise NotImplementedError
+
+    async def fetch_ticks(self, from_id: int = None, start_time: int = None, end_time: int = None,
+                          do_print: bool = True):
+        raise NotImplementedError
 
     def calc_orders(self):
         balance = self.position['wallet_balance'] * 0.9
@@ -327,7 +254,7 @@ class Bot:
             no_pos = long_psize == 0.0 and shrt_psize == 0.0
             do_long = (no_pos and self.do_long) or long_psize != 0.0
             do_shrt = (no_pos and self.do_shrt) or shrt_psize != 0.0
-                                              
+
         self.xk['do_long'] = do_long
         self.xk['do_shrt'] = do_shrt
 
@@ -388,30 +315,6 @@ class Bot:
                                       'reduce_only': True, 'custom_id': 'close'})
         return long_entry_orders + shrt_entry_orders + long_close_orders + shrt_close_orders
 
-    async def cancel_and_create(self):
-        await asyncio.sleep(0.005)
-        await self.update_position()
-        await asyncio.sleep(0.005)
-        if any([self.ts_locked[k_] > self.ts_released[k_]
-                for k_ in [x for x in self.ts_locked if x != 'decide']]):
-            return
-        to_cancel, to_create = filter_orders(self.open_orders,
-                                             self.calc_orders(),
-                                             keys=['side', 'position_side', 'qty', 'price'])
-        to_cancel = sorted(to_cancel, key=lambda x: calc_diff(x['price'], self.price))
-        to_create = sorted(to_create, key=lambda x: calc_diff(x['price'], self.price))
-        results = []
-        if to_cancel:
-            results.append(asyncio.create_task(self.cancel_orders(to_cancel[:self.n_orders_per_execution])))
-            await asyncio.sleep(0.005)  # sleep 5 ms between sending cancellations and creations
-        if to_create:
-            results.append(await self.create_orders(to_create[:self.n_orders_per_execution]))
-        await asyncio.sleep(0.005)
-        await self.update_position()
-        if any(results):
-            print()
-        return results
-
     async def decide(self):
         if self.stop_mode is not None:
             print(f'{self.stop_mode} stop mode is active')
@@ -434,6 +337,54 @@ class Bot:
             return
         if time() - self.ts_released['print'] >= 0.5:
             await self.update_output_information()
+
+    def update_indicators(self, ticks: dict):
+        for tick in ticks:
+            self.agg_qty += tick['qty']
+            if tick['price'] == self.price and tick['is_buyer_maker'] == self.is_buyer_maker:
+                continue
+            self.qty = self.agg_qty
+            self.agg_qty = 0.0
+            self.price = tick['price']
+            self.is_buyer_maker = tick['is_buyer_maker']
+            if tick['is_buyer_maker']:
+                self.ob[0] = tick['price']
+            else:
+                self.ob[1] = tick['price']
+            self.ema = calc_ema(self.ema_alpha, self.ema_alpha_, self.ema, tick['price'])
+            self.sum_prices -= self.tick_prices_deque[0]
+            self.sum_prices_squared -= self.tick_prices_deque[0] ** 2
+            self.tick_prices_deque.append(tick['price'])
+            self.sum_prices += self.tick_prices_deque[-1]
+            self.sum_prices_squared += self.tick_prices_deque[-1] ** 2
+        self.price_std = np.sqrt((self.sum_prices_squared / len(self.tick_prices_deque) -
+                                  ((self.sum_prices / len(self.tick_prices_deque)) ** 2)))
+        self.volatility = self.price_std / self.ema
+
+    async def update_position(self) -> None:
+        # also updates open orders
+        if self.ts_locked['update_position'] > self.ts_released['update_position']:
+            return
+        self.ts_locked['update_position'] = time()
+        try:
+            position, _ = await asyncio.gather(self.fetch_position(),
+                                               self.update_open_orders())
+            position['used_margin'] = \
+                ((calc_cost(position['long']['size'], position['long']['price'],
+                            self.xk['inverse'], self.xk['contract_multiplier'])
+                  if position['long']['price'] else 0.0) +
+                 (calc_cost(position['shrt']['size'], position['shrt']['price'],
+                            self.xk['inverse'], self.xk['contract_multiplier'])
+                  if position['shrt']['price'] else 0.0)) / self.leverage
+            position['available_margin'] = (position['equity'] - position['used_margin']) * 0.9
+            position['long']['liq_diff'] = calc_diff(position['long']['liquidation_price'], self.price)
+            position['shrt']['liq_diff'] = calc_diff(position['shrt']['liquidation_price'], self.price)
+            if self.position != position:
+                self.dump_log({'log_type': 'position', 'data': position})
+            self.position = position
+            self.ts_released['update_position'] = time()
+        except Exception as e:
+            print('error with update position', e)
 
     async def update_output_information(self):
         self.ts_released['print'] = time()
@@ -474,14 +425,6 @@ class Bot:
         line += f"v. {compress_float(self.volatility, 5)} "
         print_([line], r=True)
 
-    def flush_stuck_locks(self, timeout: float = 4.0) -> None:
-        now = time()
-        for key in self.ts_locked:
-            if self.ts_locked[key] > self.ts_released[key]:
-                if now - self.ts_locked[key] > timeout:
-                    print('flushing', key)
-                    self.ts_released[key] = now
-
     async def fetch_compressed_ticks(self):
 
         def drop_consecutive_same_prices(ticks_):
@@ -501,7 +444,7 @@ class Bot:
         delay_between_fetches = 0.55
         print()
         while True:
-            print(f'\rfetching ticks... {len(ticks)} of {self.ema_span} ', end= ' ')
+            print(f'\rfetching ticks... {len(ticks)} of {self.ema_span} ', end=' ')
             sts = time()
             new_ticks = await self.fetch_ticks(from_id=ticks[0]['trade_id'] - ticks_per_fetch,
                                                do_print=False)
@@ -513,50 +456,6 @@ class Bot:
             await asyncio.sleep(wait_for)
         new_ticks = await self.fetch_ticks(do_print=False)
         return drop_consecutive_same_prices(sorted(ticks + new_ticks, key=lambda x: x['trade_id']))
-
-    async def init_indicators(self):
-        ticks = await self.fetch_compressed_ticks()
-        ema = ticks[0]['price']
-        self.tick_prices_deque = deque(maxlen=self.ema_span)
-        for tick in ticks:
-            self.tick_prices_deque.append(tick['price'])
-            ema = ema * self.ema_alpha_ + tick['price'] * self.ema_alpha
-        if len(self.tick_prices_deque) < self.ema_span:
-            print('\nwarning: insufficient ticks fetched, filling deque with duplicate ticks...')
-            print('ema and volatility will be inaccurate until deque is filled with websocket ticks')
-            while len(self.tick_prices_deque) < self.ema_span:
-                self.tick_prices_deque.extend([t['price'] for t in ticks])
-        self.ema = ema
-        self.sum_prices = sum(self.tick_prices_deque)
-        self.sum_prices_squared = sum([e ** 2 for e in self.tick_prices_deque])
-        self.price_std = np.sqrt((self.sum_prices_squared / len(self.tick_prices_deque) -
-                                 ((self.sum_prices / len(self.tick_prices_deque)) ** 2)))
-        self.volatility = self.price_std / self.ema
-        print('\ndebug len ticks, prices deque, ema_span')
-        print(len(ticks), len(self.tick_prices_deque), self.ema_span)
-
-    def update_indicators(self, ticks: dict):
-        for tick in ticks:
-            self.agg_qty += tick['qty']
-            if tick['price'] == self.price and tick['is_buyer_maker'] == self.is_buyer_maker:
-                continue
-            self.qty = self.agg_qty
-            self.agg_qty = 0.0
-            self.price = tick['price']
-            self.is_buyer_maker = tick['is_buyer_maker']
-            if tick['is_buyer_maker']:
-                self.ob[0] = tick['price']
-            else:
-                self.ob[1] = tick['price']
-            self.ema = calc_ema(self.ema_alpha, self.ema_alpha_, self.ema, tick['price'])
-            self.sum_prices -= self.tick_prices_deque[0]
-            self.sum_prices_squared -= self.tick_prices_deque[0] ** 2
-            self.tick_prices_deque.append(tick['price'])
-            self.sum_prices += self.tick_prices_deque[-1]
-            self.sum_prices_squared += self.tick_prices_deque[-1] ** 2
-        self.price_std = np.sqrt((self.sum_prices_squared / len(self.tick_prices_deque) -
-                                 ((self.sum_prices / len(self.tick_prices_deque)) ** 2)))
-        self.volatility = self.price_std / self.ema
 
     async def start_websocket(self) -> None:
         self.stop_websocket = False
@@ -593,25 +492,32 @@ class Bot:
                     if 'success' not in msg:
                         print('error in websocket', e, msg)
 
-    def remove_lock_file(self):
+    def stop(self, signum=None, frame=None) -> None:
+        print("\nStopping passivbot, please wait...")
         try:
-            if os.path.exists(self.lock_file):
-                os.remove(self.lock_file)
-                print('The lock file has been removed succesfully')
+            self.stop_websocket = True
+            if self.telegram is not None:
+                self.telegram.exit()
             else:
-                print("The lock file doesn't exists, no need to do anything, but it should've been there!")
-        except:
-            print(f"Failed to remove the lock file! Please remove the file {self.lock_file} manually to ensure fast restarts")
+                print("No telegram active")
+        except Exception as e:
+            print(f"An error occurred during shutdown: {e}")
+
+    def pause(self) -> None:
+        self.process_websocket_ticks = False
+
+    def resume(self) -> None:
+        self.process_websocket_ticks = True
 
     async def acquire_interprocess_lock(self):
         if os.path.exists(self.lock_file):
-            #if the file was last modified over 15 minutes ago, assume that something went wrong
+            # if the file was last modified over 15 minutes ago, assume that something went wrong
             if time() - os.path.getmtime(self.lock_file) > 15 * 60:
                 print(f'File {self.lock_file} last modified more than 15 minutes ago. Assuming something went wrong'
                       f' trying to delete it, attempting removal of file')
                 self.remove_lock_file()
             else:
-                raise LockNotAvailableException("Another bot has the lock. "\
+                raise LockNotAvailableException("Another bot has the lock. "
                                                 f"To force acquire lock, delete .passivbotlock file: {self.lock_file}")
 
         pid = str(os.getpid())
@@ -627,106 +533,27 @@ class Bot:
             raise LockNotAvailableException("Lock is stolen by another bot")
         return
 
-async def start_bot(bot):
-    while not bot.stop_websocket:
+    def flush_stuck_locks(self, timeout: float = 4.0) -> None:
+        now = time()
+        for key in self.ts_locked:
+            if self.ts_locked[key] > self.ts_released[key]:
+                if now - self.ts_locked[key] > timeout:
+                    print('flushing', key)
+                    self.ts_released[key] = now
+
+    def remove_lock_file(self):
         try:
-            await bot.acquire_interprocess_lock()
-            await bot.start_websocket()
-        except Exception as e:
-            print('Websocket connection has been lost or unable to acquire lock to start, attempting to reinitialize the bot...', e)
-            await asyncio.sleep(10)
+            if os.path.exists(self.lock_file):
+                os.remove(self.lock_file)
+                print('The lock file has been removed succesfully')
+            else:
+                print("The lock file doesn't exists, no need to do anything, but it should've been there!")
+        except:
+            print(
+                f"Failed to remove the lock file! Please remove the file {self.lock_file} manually to ensure fast restarts")
 
-async def create_binance_bot(config: str):
-    from binance import BinanceBot
-    bot = BinanceBot(config)
-    await bot._init()
-    return bot
+    def standardize_websocket_ticks(self, data: dict) -> [dict]:
+        raise NotImplementedError
 
-
-async def create_bybit_bot(config: str):
-    from bybit import Bybit
-    bot = Bybit(config)
-    await bot._init()
-    return bot
-
-
-async def _start_telegram(account: dict, bot: Bot):
-    telegram = telegram_bot.Telegram(token=account['telegram']['token'],
-                                     chat_id=account['telegram']['chat_id'],
-                                     bot=bot,
-                                     loop=asyncio.get_event_loop())
-    telegram.log_start()
-    return telegram
-
-
-def add_argparse_args(parser):
-    parser.add_argument('--nojit', help='disable numba', action='store_true')
-    parser.add_argument('-b', '--backtest_config', type=str, required=False, dest='backtest_config_path',
-                        default='configs/backtest/default.hjson', help='backtest config hjson file')
-    parser.add_argument('-o', '--optimize_config', type=str, required=False, dest='optimize_config_path',
-                        default='configs/optimize/default.hjson', help='optimize config hjson file')
-    parser.add_argument('-d', '--download-only', help='download only, do not dump ticks caches', action='store_true')
-    parser.add_argument('-s', '--symbol', type=str, required=False, dest='symbol',
-                        default='none', help='specify symbol, overriding symbol from backtest config')
-    parser.add_argument('-u', '--user', type=str, required=False, dest='user',
-                        default='none',
-                        help='specify user, a.k.a. account_name, overriding user from backtest config')
-    return parser
-
-
-def get_passivbot_argparser():
-    parser = argparse.ArgumentParser(prog='passivbot', description='run passivbot')
-    parser.add_argument('user', type=str, help='user/account_name defined in api-keys.json')
-    parser.add_argument('symbol', type=str, help='symbol to trade')
-    parser.add_argument('live_config_path', type=str, help='live config to use')
-    return parser
-
-
-async def main() -> None:
-    args = add_argparse_args(get_passivbot_argparser()).parse_args()
-    try:
-        accounts = json.load(open('api-keys.json'))
-    except Exception as e:
-        print(e, 'failed to load api-keys.json file')
-        return
-    try:
-        account = accounts[args.user]
-    except Exception as e:
-        print('unrecognized account name', args.user, e)
-        return
-    try:
-        config = json.load(open(args.live_config_path))
-    except Exception as e:
-        print(e, 'failed to load config', args.live_config_path)
-        return
-    config['user'] = args.user
-    config['exchange'] = account['exchange']
-    config['symbol'] = args.symbol
-    config['live_config_path'] = args.live_config_path
-
-    if account['exchange'] == 'binance':
-        bot = await create_binance_bot(config)
-    elif account['exchange'] == 'bybit':
-        bot = await create_bybit_bot(config)
-    else:
-        raise Exception('unknown exchange', account['exchange'])
-    print('using config')
-    print(json.dumps(config, indent=4))
-
-    if 'telegram' in account and account['telegram']['enabled']:
-        telegram = await _start_telegram(account=account, bot=bot)
-        bot.telegram = telegram
-    signal.signal(signal.SIGINT, bot.stop)
-    signal.signal(signal.SIGTERM, bot.stop)
-    await start_bot(bot)
-    await bot.session.close()
-
-
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        print(f'\nThere was an error starting the bot: {e}')
-    finally:
-        print('\nPassivbot was stopped succesfully')
-        os._exit(0)
+    async def subscribe_ws(self, ws):
+        raise NotImplementedError

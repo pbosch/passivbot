@@ -1,16 +1,19 @@
 from __future__ import annotations
-from typing import Any, Dict, Iterator
-from nptyping import NDArray, Float64
+
+from copy import deepcopy
 from operator import mul
 from operator import truediv as div
-from typing import Iterable, Optional, Union
-from copy import deepcopy
-from pandas.io.json._normalize import nested_to_record
-from backtest import backtest
-from analyze import analyze_backtest
-from passivbot import ts_to_date
-import pandas as pd
+from typing import Any, Dict, Iterator
+from typing import Optional
+
 import numpy as np
+from nptyping import NDArray, Float64
+from pandas.io.json._normalize import nested_to_record
+
+from backtest import backtest
+from backtest_helpers.analyze import analyze_backtest
+from helpers.helpers import ts_to_date
+
 
 # TODO: improve type hinting
 class WFO:
@@ -27,13 +30,13 @@ class WFO:
         )
 
     def __init__(
-        self,
-        ticks: NDArray[(Any, 3), Float64],
-        bc: dict,
-        P_train: float = 0.2,
-        P_test: float = 0.1,
-        P_gap: float = 0.0,
-        verbose: bool = True,
+            self,
+            ticks: NDArray[(Any, 3), Float64],
+            bc: dict,
+            P_train: float = 0.2,
+            P_test: float = 0.1,
+            P_gap: float = 0.0,
+            verbose: bool = True,
     ):
         self.step = {"train": P_train, "test": P_test, "gap": P_gap}
         self.ticks = ticks
@@ -65,7 +68,7 @@ class WFO:
             start, end = splits["train"]["start_idx"], splits["train"]["end_idx"]
             self.update_config(config, splits["train"])  # Update n_days and start/end date
             fills, stats, did_finish = backtest(config, self.ticks[start:end])
-            _,_,result_ = analyze_backtest(fills, stats, self.bc)
+            _, _, result_ = analyze_backtest(fills, stats, self.bc)
             results.append(result_)
 
             all_daily_returns.append(result_["returns_daily" + "_obj"])  # stats is more accurate than fills
@@ -105,13 +108,13 @@ class WFO:
 
             self.update_config(bc, train, balance_and_pos)
 
-            analysis = backtest_tune(self.ticks[train["start_idx"] : train["end_idx"]], bc)
+            analysis = backtest_tune(self.ticks[train["start_idx"]: train["end_idx"]], bc)
             candidate = clean_result_config(analysis.best_config)
 
             self.update_config(bc, test)
-            fills, stats, did_finish = backtest(candidate, self.ticks[test["start_idx"] : test["end_idx"]])
+            fills, stats, did_finish = backtest(candidate, self.ticks[test["start_idx"]: test["end_idx"]])
 
-            _,_,result = analyze_backtest(
+            _, _, result = analyze_backtest(
                 fills,
                 stats,
                 bc,
