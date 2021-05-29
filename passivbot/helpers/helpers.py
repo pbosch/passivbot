@@ -150,9 +150,12 @@ def add_argparse_args(parser):
     parser.add_argument('-d', '--download-only', help='download only, do not dump ticks caches', action='store_true')
     parser.add_argument('-s', '--symbol', type=str, required=False, dest='symbol',
                         default='none', help='specify symbol, overriding symbol from backtest config')
-    parser.add_argument('-u', '--user', type=str, required=False, dest='user',
-                        default='none',
+    parser.add_argument('-u', '--user', type=str, required=False, dest='user', default='none',
                         help='specify user, a.k.a. account_name, overriding user from backtest config')
+    parser.add_argument('--start-date', type=str, required=False, dest='start_date', default='none',
+                        help='specify start date, overriding value from backtest config')
+    parser.add_argument('--end-date', type=str, required=False, dest='end_date', default='none',
+                        help='specify end date, overriding value from backtest config')
     return parser
 
 
@@ -221,10 +224,9 @@ async def prep_config(args) -> dict:
     except Exception as e:
         raise Exception('failed to load optimize config', args.optimize_config_path, e)
     config = {**oc, **bc}
-    if args.symbol != 'none':
-        config['symbol'] = args.symbol
-    if args.user != 'none':
-        config['user'] = args.user
+    for key in ['symbol', 'user', 'start_date', 'end_date']:
+        if getattr(args, key) != 'none':
+            config[key] = getattr(args, key)
     end_date = config['end_date'] if config['end_date'] and config['end_date'] != -1 else ts_to_date(time())[:16]
     config['session_name'] = f"{config['start_date'].replace(' ', '').replace(':', '').replace('.', '')}_" \
                              f"{end_date.replace(' ', '').replace(':', '').replace('.', '')}"
