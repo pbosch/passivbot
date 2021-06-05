@@ -28,7 +28,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.mode == 'download':
-        from passivbot.downloader import Downloader
+        from main.downloader import Downloader
 
     elif args.mode == 'backtest':
         pass
