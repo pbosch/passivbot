@@ -4,8 +4,9 @@ import logging
 import os
 import signal
 
+import telegram_bot
+
 from bots.base import Bot
-from bots.telegram_bot import Telegram
 from helpers.helpers import add_argparse_args, get_passivbot_argparser, create_binance_bot, create_bybit_bot
 
 logging.getLogger("telegram").setLevel(logging.CRITICAL)
@@ -24,10 +25,9 @@ async def start_bot(bot):
 
 
 async def _start_telegram(account: dict, bot: Bot):
-    telegram = Telegram(token=account['telegram']['token'],
-                        chat_id=account['telegram']['chat_id'],
-                        bot=bot,
-                        loop=asyncio.get_event_loop())
+    telegram = telegram_bot.Telegram(config=account['telegram'],
+                                     bot=bot,
+                                     loop=asyncio.get_event_loop())
     telegram.log_start()
     return telegram
 
