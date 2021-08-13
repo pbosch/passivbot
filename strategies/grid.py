@@ -224,6 +224,8 @@ class Grid(Strategy):
             change_back = True
         self.on_update(PositionList(), empty_order())
         price_list = empty_candle_list()
+        price_list.append(Candle(0, 0.1, 0.1, 0.1, 0.1, 0.1))
+        price_list.append(Candle(self.candle_past_interval * 1000, 0.1, 0.1, 0.1, 0.1, 0.1))
         self.make_decision(price_list)
         self.prepare_tp_orders(PositionList())
         p = PositionList()
