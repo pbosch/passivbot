@@ -222,7 +222,7 @@ async def load_exchange_settings(exchange: str, symbol: str, user: str, market_t
 
 
 async def prep_config(args) -> []:
-    configs = [args.backtest_config, args.optimize_config]
+    configs = [args.backtest_config]#, args.optimize_config]
     if hasattr(args, 'live_config'):
         configs.append(args.live_config)
     config = load_config_files(configs)
@@ -267,8 +267,8 @@ def add_argparse_args(parser):
     parser.add_argument('-n', '--nojit', action='store_true', dest='nojit', help='Disable numba.')
     parser.add_argument('-b', '--backtest_config', type=str, required=False, dest='backtest_config',
                         default='configs/backtest/test.hjson', help='Backtest config hjson file.')
-    parser.add_argument('-o', '--optimize_config', type=str, required=False, dest='optimize_config',
-                        default='configs/optimize/test.json', help='Optimize config hjson file.')
+    # parser.add_argument('-o', '--optimize_config', type=str, required=False, dest='optimize_config',
+    #                     default='configs/optimize/test.json', help='Optimize config hjson file.')
     parser.add_argument('-d', '--download-only', help='download only, do not dump ticks caches', action='store_true')
     parser.add_argument('-s', '--symbol', type=str, required=False, dest='symbol', default=None,
                         help='Specify symbol, overriding symbol from backtest config.')
