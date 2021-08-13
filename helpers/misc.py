@@ -1,9 +1,12 @@
 import datetime
 import os
+from collections import OrderedDict
 from typing import Union
 
 import numpy as np
 import pandas as pd
+from ray.tune import uniform, randint
+from ray.tune.sample import Float, Integer
 
 from definitions.candle import empty_candle, empty_candle_list
 from definitions.tick import empty_tick_list
