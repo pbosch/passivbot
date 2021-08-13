@@ -5,9 +5,10 @@ from numba import types, njit, typeof
 from numba.experimental import jitclass
 
 from definitions.candle import Candle, empty_candle_list
-from definitions.order import Order, empty_order, empty_order_list, TP, SELL, LONG, LIMIT, BUY, FILLED, MARKET
+from definitions.order import Order, empty_order, empty_order_list, TP, SELL, LONG, LIMIT, BUY, FILLED
 from definitions.position import empty_long_position
 from definitions.position_list import PositionList
+from helpers.converters import aggregate_candles
 from helpers.optimized import round_down, calculate_new_position_size_position_price
 from strategies.base_strategy import Strategy, base_strategy_spec
 
@@ -104,17 +105,37 @@ def get_tp_grid(position_price: float, position_size: float, tp_grid: np.ndarray
     return tp_prices, tp_sizes
 
 
+@njit
+def get_last_full_candles(candles: List[Candle], interval: int) -> List[Candle]:
+    """
+    Function that finds the Candles in the last full interval, usually hours.
+    :param candles: The list of Candles to search.
+    :param interval: The interval to use.
+    :return: The list of Candles in the last full interval.
+    """
+    last_hour_candles = empty_candle_list()
+    if len(candles) > 0:
+        timestamp = candles[-1].timestamp
+        end_last_full_hour = int(timestamp - (timestamp % (interval * 1000)))
+        start_last_full_hour = end_last_full_hour - (interval * 1000)
+        for candle in candles:
+            if candle.timestamp >= start_last_full_hour and candle.timestamp < end_last_full_hour:
+                last_hour_candles.append(candle)
+    return last_hour_candles
+
+
 @jitclass([
     ('reentry_grid', types.float64[:, :]),
     ('tp_grid', types.float64[:, :]),
     ('percent', types.float64),
+    ('candle_past_interval', types.int64)
 ])
 class StrategyConfig:
     """
     Strategy config for the grid trading strategy.
     """
 
-    def __init__(self, reentry_grid: np.ndarray, tp_grid: np.ndarray, percent: float):
+    def __init__(self, reentry_grid: np.ndarray, tp_grid: np.ndarray, percent: float, candle_past_interval: int):
         """
         Initializes a strategy config for the grid trading strategy.
         :param reentry_grid: The reentry grid to use.
@@ -124,6 +145,7 @@ class StrategyConfig:
         self.reentry_grid = reentry_grid
         self.tp_grid = tp_grid
         self.percent = percent
+        self.candle_past_interval = candle_past_interval
 
 
 def convert_dict_to_config(config: dict) -> StrategyConfig:
@@ -141,22 +163,25 @@ def convert_dict_to_config(config: dict) -> StrategyConfig:
         grid.append([v[0], v[1]])
     tp_grid = np.array(grid)
     percent = config['percent']
-    strategy_config = StrategyConfig(reentry_grid, tp_grid, percent)
+    candle_past_interval = config['candle_past_interval']
+    strategy_config = StrategyConfig(reentry_grid, tp_grid, percent, candle_past_interval)
     return strategy_config
 
 
 @jitclass([
-              ("config", typeof(StrategyConfig(np.asarray([[0.0, 0.0]]), np.asarray([[0.0, 0.0]]), 0.0))),
+              ("config", typeof(StrategyConfig(np.asarray([[0.0, 0.0]]), np.asarray([[0.0, 0.0]]), 0.0, 0))),
           ]
           + base_strategy_spec +
           [
               ('reentry_grid', types.float64[:, :]),
               ('tp_grid', types.float64[:, :]),
               ('percent', types.float64),
+              ('candle_past_interval', types.int64),
               ("last_filled_order", typeof(empty_order())),
               ("last_position", typeof(PositionList())),
               ("position_change", types.boolean),
-              ("order_fill_change", types.boolean)
+              ("order_fill_change", types.boolean),
+              ("candle_store", typeof(empty_candle_list()))
           ])
 class Grid(Strategy):
     """
@@ -174,10 +199,14 @@ class Grid(Strategy):
         self.tp_grid = self.config.tp_grid
         self.percent = self.config.percent
 
+        self.candle_past_interval = self.config.candle_past_interval
+
         self.last_filled_order = empty_order()
         self.last_position = PositionList()
         self.position_change = False
         self.order_fill_change = False
+
+        self.candle_store = empty_candle_list()
 
     def precompile(self):
         """
@@ -199,12 +228,14 @@ class Grid(Strategy):
         self.prepare_tp_orders(PositionList())
         p = PositionList()
         p.update_long(empty_long_position())
-        self.prepare_reentry_orders(p)
+        self.prepare_reentry_orders(1.0, 1.0, 1.0, '')
         self.calculate_dca_tp(p)
         if change_back:
             self.quantity_step = 0.0
             self.price_step = 0.0
         self.last_filled_order = empty_order()
+        aggregate_candles(empty_candle_list())
+        get_last_full_candles(empty_candle_list(), 1)
 
     def make_decision(self, prices: List[Candle]) -> Tuple[List[Order], List[Order]]:
         """
@@ -214,11 +245,36 @@ class Grid(Strategy):
         """
         add_orders = empty_order_list()
         delete_orders = empty_order_list()
-        if self.position.long.empty() and len(self.open_orders.long) == 0:
-            if len(prices) > 0:
-                size = get_initial_position(prices[-1].close, self.leverage, self.reentry_grid, self.balance,
-                                            self.percent, self.quantity_step, self.price_step)
-                add_orders.append(Order(self.symbol, 0, 0.0, 0.0, size, MARKET, BUY, 0, '', LONG))
+        self.candle_store.extend(prices)
+        self.candle_store = self.candle_store[
+                            len(self.candle_store) - (2 * self.candle_past_interval * int(1 / self.tick_interval)):]
+        if self.position.long.empty():
+            last_candle = aggregate_candles(get_last_full_candles(self.candle_store, self.candle_past_interval))
+            initial_size = get_initial_position(last_candle.low, self.leverage, self.reentry_grid, self.balance,
+                                                self.percent, self.quantity_step, self.price_step)
+            if len(self.open_orders.long) == 0:
+                add_orders.append(
+                    Order(self.symbol, 0, last_candle.low, last_candle.low, initial_size, LIMIT, BUY, 0, '', LONG))
+                add_orders.extend(
+                    self.prepare_reentry_orders(initial_size, last_candle.low, self.leverage, self.symbol))
+            else:
+                exists = False
+                for order in self.open_orders.long:
+                    if order.order_type == LIMIT and order.side == BUY and order.price == last_candle.low and order.quantity == initial_size:
+                        exists = True
+                        break
+                if not exists:
+                    for order in self.open_orders.long:
+                        delete_orders.append(order)
+                    add_orders.append(
+                        Order(self.symbol, 0, last_candle.low, last_candle.low, initial_size, LIMIT, BUY, 0, '', LONG))
+                    add_orders.extend(
+                        self.prepare_reentry_orders(initial_size, last_candle.low, self.leverage, self.symbol))
+        # if self.position.long.empty() and len(self.open_orders.long) == 0:
+        #     if len(prices) > 0:
+        #         size = get_initial_position(prices[-1].close, self.leverage, self.reentry_grid, self.balance,
+        #                                     self.percent, self.quantity_step, self.price_step)
+        #         add_orders.append(Order(self.symbol, 0, 0.0, 0.0, size, MARKET, BUY, 0, '', LONG))
         return add_orders, delete_orders
 
     def on_order_update(self, last_filled_order: Order) -> Tuple[List[Order], List[Order]]:
@@ -299,7 +355,9 @@ class Grid(Strategy):
                 for order in self.open_orders.long:
                     if order.order_type == LIMIT:
                         delete_orders.append(order)
-                add_orders.extend(self.prepare_reentry_orders(position))
+                add_orders.extend(
+                    self.prepare_reentry_orders(position.long.size, position.long.price, position.long.leverage,
+                                                position.long.symbol))
             else:
                 # Position was changed but not by the strategy
                 # Recalculate both
@@ -323,19 +381,21 @@ class Grid(Strategy):
             orders.append(order)
         return orders
 
-    def prepare_reentry_orders(self, position: PositionList) -> List[Order]:
+    def prepare_reentry_orders(self, size: float, price: float, leverage: float, symbol: str) -> List[Order]:
         """
         Prepares the reentry orders. Calculates the grid and converts it to order list.
-        :param position: Current position.
+        :param size: Size to use.
+        :param price: Price to use.
+        :param leverage: Leverage to use.
+        :param symbol: Symbol to use.
         :return: Typed list of orders.
         """
         orders = empty_order_list()
-        reentry_prices, reentry_sizes = get_dca_grid(position.long.size, position.long.price, position.long.leverage,
-                                                     self.reentry_grid, self.balance, self.percent, self.quantity_step,
-                                                     self.price_step)
+        reentry_prices, reentry_sizes = get_dca_grid(size, price, leverage, self.reentry_grid, self.balance,
+                                                     self.percent, self.quantity_step, self.price_step)
         for i in range(len(reentry_prices)):
-            order = Order(position.long.symbol, 0, float(reentry_prices[i]), float(reentry_prices[i]),
-                          float(reentry_sizes[i]), LIMIT, BUY, 0, '', LONG)
+            order = Order(symbol, 0, float(reentry_prices[i]), float(reentry_prices[i]), float(reentry_sizes[i]), LIMIT,
+                          BUY, 0, '', LONG)
             orders.append(order)
         return orders
 
@@ -346,11 +406,12 @@ class Grid(Strategy):
         :return: Typed list of orders.
         """
         orders = empty_order_list()
-        orders.extend(self.prepare_reentry_orders(position))
+        orders.extend(self.prepare_reentry_orders(position.long.size, position.long.price, position.long.leverage,
+                                                  position.long.symbol))
         orders.extend(self.prepare_tp_orders(position))
         return orders
 
 
 # Strategy definition used in initializing the backtesting bot.
 # Ensure that this is correctly defined.
-strategy_definition = Grid(StrategyConfig(np.zeros((1, 1)), np.zeros((1, 1)), 0.0))
+strategy_definition = Grid(StrategyConfig(np.zeros((1, 1)), np.zeros((1, 1)), 0.0, 0))
