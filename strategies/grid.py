@@ -5,7 +5,7 @@ from numba import types, njit, typeof
 from numba.experimental import jitclass
 
 from definitions.candle import Candle, empty_candle_list
-from definitions.order import Order, empty_order, empty_order_list, TP, SELL, LONG, LIMIT, BUY, FILLED
+from definitions.order import Order, empty_order, empty_order_list, TP, SELL, LONG, LIMIT, MARKET, BUY, FILLED
 from definitions.position import empty_long_position
 from definitions.position_list import PositionList
 from helpers.converters import aggregate_candles
@@ -128,24 +128,29 @@ def get_last_full_candles(candles: List[Candle], interval: int) -> List[Candle]:
     ('reentry_grid', types.float64[:, :]),
     ('tp_grid', types.float64[:, :]),
     ('percent', types.float64),
-    ('candle_past_interval', types.int64)
+    ('candle_past_interval', types.int64),
+    ("market_entry", types.boolean)
 ])
 class StrategyConfig:
     """
     Strategy config for the grid trading strategy.
     """
 
-    def __init__(self, reentry_grid: np.ndarray, tp_grid: np.ndarray, percent: float, candle_past_interval: int):
+    def __init__(self, reentry_grid: np.ndarray, tp_grid: np.ndarray, percent: float, candle_past_interval: int,
+                 market_entry: bool):
         """
         Initializes a strategy config for the grid trading strategy.
         :param reentry_grid: The reentry grid to use.
         :param tp_grid: The take profit grid to use.
         :param percent: The wallet percentage to use.
+        :param candle_past_interval: The interval to use for the last candle price check.
+        :param market_entry: Whether to use market entries or based on price of last candle.
         """
         self.reentry_grid = reentry_grid
         self.tp_grid = tp_grid
         self.percent = percent
         self.candle_past_interval = candle_past_interval
+        self.market_entry = market_entry
 
 
 def convert_dict_to_config(config: dict) -> StrategyConfig:
@@ -163,8 +168,9 @@ def convert_dict_to_config(config: dict) -> StrategyConfig:
         grid.append([v[0], v[1]])
     tp_grid = np.array(grid)
     percent = config['percent']
-    candle_past_interval = config['candle_past_interval']
-    strategy_config = StrategyConfig(reentry_grid, tp_grid, percent, candle_past_interval)
+    candle_past_interval = config['candle_past_interval'] if 'candle_past_interval' in config else 0
+    market_entry = config['market_entry'] if 'market_entry' in config else False
+    strategy_config = StrategyConfig(reentry_grid, tp_grid, percent, candle_past_interval, market_entry)
     return strategy_config
 
 
@@ -181,7 +187,8 @@ def convert_dict_to_config(config: dict) -> StrategyConfig:
               ("last_position", typeof(PositionList())),
               ("position_change", types.boolean),
               ("order_fill_change", types.boolean),
-              ("candle_store", typeof(empty_candle_list()))
+              ("candle_store", typeof(empty_candle_list())),
+              ("market_entry", types.boolean)
           ])
 class Grid(Strategy):
     """
@@ -207,6 +214,8 @@ class Grid(Strategy):
         self.order_fill_change = False
 
         self.candle_store = empty_candle_list()
+
+        self.market_entry = config.market_entry
 
     def precompile(self):
         """
@@ -247,36 +256,40 @@ class Grid(Strategy):
         """
         add_orders = empty_order_list()
         delete_orders = empty_order_list()
-        self.candle_store.extend(prices)
-        self.candle_store = self.candle_store[
-                            len(self.candle_store) - (2 * self.candle_past_interval * int(1 / self.tick_interval)):]
-        if self.position.long.empty():
-            last_candle = aggregate_candles(get_last_full_candles(self.candle_store, self.candle_past_interval))
-            initial_size = get_initial_position(last_candle.low, self.leverage, self.reentry_grid, self.balance,
+        if self.market_entry:
+            if self.position.long.empty() and len(self.open_orders.long) == 0:
+                if len(prices) > 0:
+                    size = get_initial_position(prices[-1].close, self.leverage, self.reentry_grid, self.balance,
                                                 self.percent, self.quantity_step, self.price_step)
-            if len(self.open_orders.long) == 0:
-                add_orders.append(
-                    Order(self.symbol, 0, last_candle.low, last_candle.low, initial_size, LIMIT, BUY, 0, '', LONG))
-                add_orders.extend(
-                    self.prepare_reentry_orders(initial_size, last_candle.low, self.leverage, self.symbol))
-            else:
-                exists = False
-                for order in self.open_orders.long:
-                    if order.order_type == LIMIT and order.side == BUY and order.price == last_candle.low and order.quantity == initial_size:
-                        exists = True
-                        break
-                if not exists:
-                    for order in self.open_orders.long:
-                        delete_orders.append(order)
+                    add_orders.append(Order(self.symbol, 0, 0.0, 0.0, size, MARKET, BUY, 0, '', LONG))
+        else:
+            self.candle_store.extend(prices)
+            self.candle_store = self.candle_store[
+                                len(self.candle_store) - (2 * self.candle_past_interval * int(1 / self.tick_interval)):]
+            if self.position.long.empty():
+                last_candle = aggregate_candles(get_last_full_candles(self.candle_store, self.candle_past_interval))
+                initial_size = get_initial_position(last_candle.low, self.leverage, self.reentry_grid, self.balance,
+                                                    self.percent, self.quantity_step, self.price_step)
+                if len(self.open_orders.long) == 0:
                     add_orders.append(
                         Order(self.symbol, 0, last_candle.low, last_candle.low, initial_size, LIMIT, BUY, 0, '', LONG))
                     add_orders.extend(
                         self.prepare_reentry_orders(initial_size, last_candle.low, self.leverage, self.symbol))
-        # if self.position.long.empty() and len(self.open_orders.long) == 0:
-        #     if len(prices) > 0:
-        #         size = get_initial_position(prices[-1].close, self.leverage, self.reentry_grid, self.balance,
-        #                                     self.percent, self.quantity_step, self.price_step)
-        #         add_orders.append(Order(self.symbol, 0, 0.0, 0.0, size, MARKET, BUY, 0, '', LONG))
+                else:
+                    exists = False
+                    for order in self.open_orders.long:
+                        if order.order_type == LIMIT and order.side == BUY and order.price == last_candle.low and order.quantity == initial_size:
+                            exists = True
+                            break
+                    if not exists:
+                        for order in self.open_orders.long:
+                            delete_orders.append(order)
+                        add_orders.append(
+                            Order(self.symbol, 0, last_candle.low, last_candle.low, initial_size, LIMIT, BUY, 0, '',
+                                  LONG))
+                        add_orders.extend(
+                            self.prepare_reentry_orders(initial_size, last_candle.low, self.leverage, self.symbol))
+
         return add_orders, delete_orders
 
     def on_order_update(self, last_filled_order: Order) -> Tuple[List[Order], List[Order]]:

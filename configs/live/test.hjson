@@ -10,6 +10,7 @@
     strategy:
     {
         percent: 0.1
+        market_entry: true
         candle_past_interval: 3600
         reentry_grid:
         {
