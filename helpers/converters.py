@@ -1,10 +1,11 @@
+import sys
 from typing import List
 
 import numpy as np
 import pandas as pd
 from numba import njit
 
-from definitions.candle import Candle
+from definitions.candle import Candle, empty_candle, empty_candle_list
 from definitions.fill import Fill
 from definitions.order import Order
 from definitions.statistic import Statistic
@@ -36,6 +37,41 @@ def candles_to_array(candles: List[Candle]) -> np.ndarray:
         array[i] = np.asarray([candles[i].timestamp, candles[i].open, candles[i].high, candles[i].low, candles[i].close,
                                candles[i].volume], dtype=np.float64)
     return array
+
+
+@njit
+def candle_array_to_list(array: np.ndarray) -> List[Candle]:
+    """
+    Converts an array of Candles into a list of Candles.
+    :param array: The array of Candles.
+    :return: A list of Candles.
+    """
+    candles = empty_candle_list()
+    for row in array:
+        candles.append(Candle(row[0], row[1], row[2], row[3], row[4], row[5]))
+    return candles
+
+
+@njit
+def aggregate_candles(candles: List[Candle]) -> Candle:
+    """
+    Aggregates a list of candles into one single candle.
+    :param candles: The candles to aggregate.
+    :return: The aggregated candle.
+    """
+    high = 0.0
+    low = sys.maxsize
+    volume = 0.0
+    candle = empty_candle()
+    for candle in candles:
+        if candle.high > high:
+            high = candle.high
+        if candle.low < low:
+            low = candle.low
+        volume += candle.volume
+    if len(candles) > 0:
+        candle = Candle(candles[-1].timestamp, candles[0].open, high, low, candles[-1].close, volume)
+    return candle
 
 
 def candles_to_frame(candles: List[Candle]) -> pd.DataFrame:
