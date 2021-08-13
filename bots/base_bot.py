@@ -73,7 +73,7 @@ class Bot:
         :return:
         """
         self.strategy.update_steps(self.quantity_step, self.price_step, self.minimal_quantity, self.minimal_cost,
-                                   self.call_interval)
+                                   self.call_interval, self.tick_interval)
         self.strategy.update_symbol(self.symbol)
         self.strategy.update_leverage(self.leverage)
 

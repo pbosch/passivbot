@@ -41,6 +41,7 @@ base_strategy_spec = [
     ("position", typeof(PositionList())),
     ("open_orders", typeof(OrderList())),
     ("call_interval", types.float64),
+    ("tick_interval", types.float64),
     ("quantity_step", types.float64),
     ("price_step", types.float64),
     ("minimal_quantity", types.float64),
@@ -66,6 +67,7 @@ class Strategy:
         self.position = PositionList()
         self.open_orders = OrderList()
         self.call_interval = 1.0
+        self.tick_interval = 0.25
         self.quantity_step = 0.0
         self.price_step = 0.0
         self.minimal_quantity = 0.0
@@ -96,7 +98,7 @@ class Strategy:
         self.leverage = leverage
 
     def update_steps(self, quantity_step: float, price_step: float, minimal_quantity: float, minimal_cost: float,
-                     call_interval: float):
+                     call_interval: float, tick_interval: float):
         """
         Assigns the qty and price step to the strategy. Depending on pair and exchange.
         :param quantity_step: The step size of the quantity of an order for this pair and exchange.
@@ -104,6 +106,7 @@ class Strategy:
         :param minimal_quantity: The minimal size of the quantity of an order for this pair and exchange.
         :param minimal_cost: The minimal cost of an order for this pair and exchange.
         :param call_interval: The call interval for the strategy. A multiple of 0.25 seconds.
+        :param tick_interval: The tick interval used in the both to aggregate candles.
         :return:
         """
         self.quantity_step = quantity_step
@@ -111,6 +114,7 @@ class Strategy:
         self.minimal_quantity = minimal_quantity
         self.minimal_cost = minimal_cost
         self.call_interval = call_interval
+        self.tick_interval = tick_interval
 
     def update_balance(self, balance: float):
         """
