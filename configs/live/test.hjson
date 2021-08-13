@@ -3,13 +3,14 @@
     leverage: 20
     call_interval: 1.0
     tick_interval: 0.25
-    historic_tick_range: 5.0
+    historic_tick_range: 7200.0
     historic_fill_range: 0.0
     strategy_file: strategies/grid.py
     strategy_class: Grid
     strategy:
     {
         percent: 0.1
+        candle_past_interval: 3600
         reentry_grid:
         {
             0: [0.6, 1.0]
