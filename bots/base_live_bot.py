@@ -474,8 +474,8 @@ class LiveBot(Bot):
                         if current - last_update >= datetime.timedelta(
                                 seconds=self.strategy.call_interval) and self.execute_strategy_logic:
                             last_update = current
-                            print_(['Do something'])
-                            # asyncio.create_task(self.async_execute_strategy_decision_making(price_list))
+                            print_(['Execute strategy decision logic'])
+                            asyncio.create_task(self.async_execute_strategy_decision_making(price_list))
                             price_list = empty_candle_list()
                     except Exception as e:
                         if 'success' not in msg:
