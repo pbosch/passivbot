@@ -413,7 +413,6 @@ class LiveBot(Bot):
                             msg = json.loads(msg)
                             type = self.determine_update_type(msg)
                             if type:
-                                # print_([msg])
                                 if type == ORDER_UPDATE:
                                     asyncio.create_task(self.async_handle_order_update(msg))
                                 elif type == ACCOUNT_UPDATE:
@@ -445,16 +444,16 @@ class LiveBot(Bot):
                         continue
                     try:
                         msg = json.loads(msg)
-                        # print_([msg])
                         tick = self.prepare_tick(msg)
                         if last_tick_update == 0:
                             # Make sure it starts at a base unit
                             # If tick interval is 250ms the base unit is either 0.0, 0.25, 0.5, or 0.75 seconds
                             last_tick_update = calculate_base_candle_time(tick, self.tick_interval)
-                        # print_tick(tick)
                         if tick.timestamp - last_tick_update > self.tick_interval * 1000 and self.execute_strategy_logic:
                             tick_list.append(tick)
                             if len(self.historic_ticks) > 0:
+                                last_tick_update = calculate_base_candle_time(self.historic_ticks[0],
+                                                                              self.tick_interval)
                                 tick_list = merge_ticks(self.historic_ticks, tick_list)
                                 self.historic_ticks = empty_tick_list()
                             # Calculate the time when the candle of the current tick ends
@@ -467,7 +466,6 @@ class LiveBot(Bot):
                             if candles:
                                 # Update last candle
                                 last_candle = candles[-1]
-                            # print_candle(last_candle)
                             # Extend candle list with new candles
                             price_list.extend(candles)
                         else:
