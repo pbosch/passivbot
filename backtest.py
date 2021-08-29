@@ -32,7 +32,7 @@ def backtest_wrap(bot, config: dict, data: np.ndarray):
     print_(['Backtesting...'])
     start = time()
     # Start run
-    fills, statistics, accepted_orders = bot.start_websocket()
+    fills, statistics, accepted_orders, finished = bot.start_websocket()
     print_([f'{time() - start:.2f} seconds elapsed'])
     fill_frame = fills_to_frame(fills)
     statistic_frame = statistics_to_frame(statistics)
