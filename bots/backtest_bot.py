@@ -370,7 +370,7 @@ class BacktestBot(Bot):
             Fill(0, self.current_timestamp, pnl, fee_paid, self.get_balance(), equity, position_balance_ratio, quantity,
                  order.price, size, price, order.order_type, order.action, order.side, order.position_side))
 
-    def start_websocket(self) -> Tuple[List[Fill], List[Statistic], List[Order]]:
+    def start_websocket(self) -> Tuple[List[Fill], List[Statistic], List[Order], bool]:
         """
         Executes the iteration over the provided data. Triggers updating of sent orders, open orders, position, and
         balance after each candle tick. Also executes the strategy decision logic after the specified call interval.
@@ -394,7 +394,7 @@ class BacktestBot(Bot):
             if self.current_timestamp >= first_timestamp + self.historic_tick_range * 1000:
                 cont = self.execute_exchange_logic(candle)
                 if not cont:
-                    return self.fills, self.statistics, self.accepted_orders
+                    return self.fills, self.statistics, self.accepted_orders, False
                 if index + 1 < len(self.data):
                     if self.data[index + 1][
                         5] != 0.0 and self.current_timestamp - last_update >= self.strategy.call_interval * 1000:
@@ -408,7 +408,7 @@ class BacktestBot(Bot):
             if index == len(self.data) - 1:
                 self.update_statistic(candle, bankruptcy_distance)
                 bankruptcy_distance = [1.0]
-        return self.fills, self.statistics, self.accepted_orders
+        return self.fills, self.statistics, self.accepted_orders, True
 
     def create_orders(self, orders_to_create: List[Order]):
         """
