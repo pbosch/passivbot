@@ -175,7 +175,7 @@ def convert_dict_to_config(config: dict) -> StrategyConfig:
 
 
 @jitclass([
-              ("config", typeof(StrategyConfig(np.asarray([[0.0, 0.0]]), np.asarray([[0.0, 0.0]]), 0.0, 0))),
+              ("config", typeof(StrategyConfig(np.asarray([[0.0, 0.0]]), np.asarray([[0.0, 0.0]]), 0.0, 0, False))),
           ]
           + base_strategy_spec +
           [
@@ -429,4 +429,4 @@ class Grid(Strategy):
 
 # Strategy definition used in initializing the backtesting bot.
 # Ensure that this is correctly defined.
-strategy_definition = Grid(StrategyConfig(np.zeros((1, 1)), np.zeros((1, 1)), 0.0, 0))
+strategy_definition = Grid(StrategyConfig(np.zeros((1, 1)), np.zeros((1, 1)), 0.0, 0, False))
