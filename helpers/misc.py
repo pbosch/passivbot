@@ -1,11 +1,11 @@
 import datetime
 import os
 from collections import OrderedDict
-from typing import Union
+from typing import Union, Tuple
 
 import numpy as np
 import pandas as pd
-from ray.tune import uniform, randint
+from ray.tune import uniform, randint, choice
 from ray.tune.sample import Float, Integer
 
 from definitions.candle import empty_candle, empty_candle_list
@@ -94,46 +94,115 @@ def create_test_data(filepath: str, tick_interval: float = 0.25):
     np.save('test_data.npy', data)
 
 
-def check_dict(d: dict) -> dict:
+def check_dict(d: dict) -> Tuple[dict, list]:
     """
     Checks a optimization configuration dictionary or sub dictionary and calls appropriate function.
     :param d: Dictionary to check.
-    :return: A dictionary with tune types in the same structure as the original dictionary.
+    :return: A dictionary with tune types in the same structure as the original dictionary and a list of keys.
     """
     new_d = {}
+    keys = []
     for key, value in d.items():
+        keys.append(key)
         if type(value) == OrderedDict or type(value) == dict:
-            new_d[key] = check_dict(value)
+            d, k = check_dict(value)
+            new_d[key] = d
+            keys.extend([key + '_' + x for x in k])
         elif type(value) == list:
-            new_d[key] = check_list(value)
+            l, k = check_list(value)
+            new_d[key] = l
+            keys.extend([key + '_' + x for x in k])
         else:
             print_(["Something wrong in checking dictionary"])
-    return new_d
+    return new_d, keys
 
 
-def check_list(l: list) -> Union[float, int, list, Float, Integer]:
+def check_list(l: list) -> Tuple[Union[float, int, list, Float, Integer], list]:
     """
     Checks a optimization configuration list or sub list and calls appropriate function or creates variable.
     :param l: List to check.
     :return: A list, integer, float, tune float, or tune integer.
     """
     new_l = []
+    keys = []
     if type(l[0]) == float:
         if l[0] == l[1]:
-            return l[0]
+            return l[0], keys
         else:
-            return uniform(l[0], l[1])
+            return uniform(l[0], l[1]), keys
     elif type(l[0]) == int:
         if l[0] == l[1]:
-            return l[0]
+            return l[0], keys
         else:
-            return randint(l[0], l[1] + 1)
+            return randint(l[0], l[1] + 1), keys
+    elif type(l[0]) == bool:
+        if l[0] == l[1]:
+            return l[0], keys
+        else:
+            return choice([l[0], l[1]]), keys
     else:
         for item in l:
             if type(item) == list:
                 new_l.append(check_list(item))
             elif type(item) == OrderedDict or type(item) == dict:
-                new_l.append(check_dict(item))
+                d, k = check_dict(item)
+                new_l.append(d)
+                keys.extend(k)
             else:
                 print_(["Something wrong in checking list"])
+    return new_l, keys
+
+
+def load_dict(start: dict, tune: dict) -> dict:
+    new_d = {}
+    for key, value in tune.items():
+        # print(key, value)
+        if key in start:
+            if type(value) == OrderedDict or type(value) == dict:
+                new_d[key] = load_dict(start[key], value)
+            elif type(value) == list:
+                new_d[key] = load_list(start[key], value)
+            elif type(value) == Float or type(value) == Integer or type(value) == float or type(value) == int or type(
+                    value) == bool:
+                new_d[key] = start[key]
+            else:
+                print_(["Something wrong in checking dictionary"])
+        else:
+            print_([key, 'not in starting config', start])
+    return new_d
+
+
+def load_list(start: list, tune: list):
+    new_l = []
+    for index in range(len(tune)):
+        # print(tune[index], start[index])
+        if index < len(start):
+            if type(tune[index]) == OrderedDict or type(tune[index]) == dict:
+                new_l.append(load_dict(start[index], tune[index]))
+            elif type(tune[index]) == list:
+                new_l.append(load_list(start[index], tune[index]))
+            elif type(tune[index]) == Float or type(tune[index]) == Integer or type(tune[index]) == float or type(
+                    tune[index]) == int or type(tune[index]) == bool:
+                new_l.append(start[index])
+        else:
+            print_([index, 'out of start config list range', start])
     return new_l
+
+
+def get_template_live_config() -> dict:
+    """
+    Creates a base live config that needs to be filled.
+    :return: Live config.
+    """
+    config = {
+        "market_type": "futures",
+        "leverage": 0,
+        "call_interval": 1.0,
+        "tick_interval": 0.25,
+        "historic_tick_range": 0.0,
+        "historic_fill_range": 0.0,
+        "strategy_file": "",
+        "strategy_class": "",
+        "strategy": {}
+    }
+    return config
