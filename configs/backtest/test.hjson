@@ -4,6 +4,7 @@
     exchange: binance
 
     latency_simulation_ms: 100
+    periodic_gain_n_days: 7.0
     starting_balance: 100000.0
 
     start_date: 2021-08-01T00:00
